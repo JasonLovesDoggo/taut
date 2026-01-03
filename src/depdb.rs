@@ -18,8 +18,14 @@ pub struct TestId {
 
 impl From<&TestItem> for TestId {
     fn from(item: &TestItem) -> Self {
+        // Canonicalize the path to ensure consistent matching
+        // between relative and absolute paths
+        let file = item
+            .file
+            .canonicalize()
+            .unwrap_or_else(|_| item.file.clone());
         Self {
-            file: item.file.clone(),
+            file,
             function: item.function.clone(),
             class: item.class.clone(),
         }

@@ -179,7 +179,39 @@ impl FileBlocks {
         for stmt in ast {
             match stmt {
                 ast::Stmt::FunctionDef(func) => {
-                    let start = offset_to_line(source, func.range.start().into());
+                    // Start from decorator if present, otherwise from def line
+                    let start = if !func.decorator_list.is_empty() {
+                        offset_to_line(source, func.decorator_list[0].range().start().into())
+                    } else {
+                        offset_to_line(source, func.range.start().into())
+                    };
+                    let end = offset_to_line(source, func.range.end().into());
+                    let source_slice = extract_lines(source, start, end);
+
+                    let (kind, name) = if let Some(cls) = parent_class {
+                        (BlockKind::Method, format!("{}.{}", cls, func.name))
+                    } else {
+                        (BlockKind::Function, func.name.to_string())
+                    };
+
+                    blocks.push(Block {
+                        id: BlockId {
+                            file: file.to_path_buf(),
+                            kind,
+                            name,
+                            start_line: start,
+                            end_line: end,
+                        },
+                        checksum: compute_checksum(&source_slice),
+                    });
+                }
+                ast::Stmt::AsyncFunctionDef(func) => {
+                    // Same logic as FunctionDef - async functions have the same structure
+                    let start = if !func.decorator_list.is_empty() {
+                        offset_to_line(source, func.decorator_list[0].range().start().into())
+                    } else {
+                        offset_to_line(source, func.range.start().into())
+                    };
                     let end = offset_to_line(source, func.range.end().into());
                     let source_slice = extract_lines(source, start, end);
 
@@ -209,7 +241,7 @@ impl FileBlocks {
                         .body
                         .iter()
                         .filter_map(|s| {
-                            if matches!(s, ast::Stmt::FunctionDef(_)) {
+                            if matches!(s, ast::Stmt::FunctionDef(_) | ast::Stmt::AsyncFunctionDef(_)) {
                                 Some(offset_to_line(source, s.range().start().into()) - 1)
                             } else {
                                 None

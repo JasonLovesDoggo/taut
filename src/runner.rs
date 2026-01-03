@@ -106,25 +106,33 @@ def run_test(test_file, test_name, class_name=None):
             if class_name:
                 cls = getattr(module, class_name)
                 instance = cls()
-                if hasattr(instance, "setUp"):
-                    instance.setUp()
-                test_func = getattr(instance, test_name)
-                _run_maybe_async(test_func)
-                if hasattr(instance, "tearDown"):
-                    instance.tearDown()
+                try:
+                    if hasattr(instance, "setUp"):
+                        instance.setUp()
+                    test_func = getattr(instance, test_name)
+                    _run_maybe_async(test_func)
+                    result["passed"] = True
+                finally:
+                    # Always run tearDown, even if test fails
+                    if hasattr(instance, "tearDown"):
+                        instance.tearDown()
             else:
                 test_func = getattr(module, test_name)
                 _run_maybe_async(test_func)
+                result["passed"] = True
 
         result["stdout"] = out_buf.getvalue()
         result["stderr"] = err_buf.getvalue()
-        result["passed"] = True
     except AssertionError as e:
+        result["stdout"] = out_buf.getvalue() if 'out_buf' in dir() else ""
+        result["stderr"] = err_buf.getvalue() if 'err_buf' in dir() else ""
         result["error"] = {
             "message": str(e) or "Assertion failed",
             "traceback": traceback.format_exc(),
         }
     except Exception as e:
+        result["stdout"] = out_buf.getvalue() if 'out_buf' in dir() else ""
+        result["stderr"] = err_buf.getvalue() if 'err_buf' in dir() else ""
         result["error"] = {
             "message": f"{type(e).__name__}: {e}",
             "traceback": traceback.format_exc(),

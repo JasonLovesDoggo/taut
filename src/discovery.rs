@@ -101,18 +101,41 @@ pub fn extract_tests_from_file(path: &Path) -> Result<Vec<TestItem>> {
                     });
                 }
             }
+            ast::Stmt::AsyncFunctionDef(func) => {
+                if is_test_name(func.name.as_str()) {
+                    items.push(TestItem {
+                        file: path.to_path_buf(),
+                        function: func.name.to_string(),
+                        class: None,
+                        line: offset_to_line(&source, func.range.start().into()),
+                    });
+                }
+            }
             ast::Stmt::ClassDef(class) => {
                 if class.name.as_str().starts_with("Test") {
                     for body_stmt in &class.body {
-                        if let ast::Stmt::FunctionDef(method) = body_stmt {
-                            if is_test_name(method.name.as_str()) {
-                                items.push(TestItem {
-                                    file: path.to_path_buf(),
-                                    function: method.name.to_string(),
-                                    class: Some(class.name.to_string()),
-                                    line: offset_to_line(&source, method.range.start().into()),
-                                });
+                        match body_stmt {
+                            ast::Stmt::FunctionDef(method) => {
+                                if is_test_name(method.name.as_str()) {
+                                    items.push(TestItem {
+                                        file: path.to_path_buf(),
+                                        function: method.name.to_string(),
+                                        class: Some(class.name.to_string()),
+                                        line: offset_to_line(&source, method.range.start().into()),
+                                    });
+                                }
                             }
+                            ast::Stmt::AsyncFunctionDef(method) => {
+                                if is_test_name(method.name.as_str()) {
+                                    items.push(TestItem {
+                                        file: path.to_path_buf(),
+                                        function: method.name.to_string(),
+                                        class: Some(class.name.to_string()),
+                                        line: offset_to_line(&source, method.range.start().into()),
+                                    });
+                                }
+                            }
+                            _ => {}
                         }
                     }
                 }
