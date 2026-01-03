@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::sync::mpsc;
 use std::time::Duration;
 
-use taut::{cache, depdb, discovery, output, runner, selection};
+use taut::{cache, config, depdb, discovery, output, runner, selection};
 
 #[derive(Parser, Debug)]
 #[command(name = "taut", version, about = "Tests, without the overhead.")]
@@ -151,6 +151,10 @@ fn watch_tests(
     isolation: &str,
     no_cache: bool,
 ) -> Result<()> {
+    // Load config from pyproject.toml
+    let config = config::Config::load(&paths[0]);
+    let jobs = jobs.or(config.max_workers);
+
     let (tx, rx) = mpsc::channel();
 
     let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
@@ -338,6 +342,12 @@ fn handle_cache_command(action: CacheAction) -> Result<()> {
 }
 
 fn run_tests(args: Args) -> Result<()> {
+    // Load config from pyproject.toml
+    let config = config::Config::load(&args.paths[0]);
+
+    // Resolve jobs: CLI flag > pyproject.toml > None (will use CPU count)
+    let jobs = args.jobs.or(config.max_workers);
+
     // 1. Discover test files
     let test_files = discovery::find_test_files(&args.paths)?;
 
@@ -360,9 +370,9 @@ fn run_tests(args: Args) -> Result<()> {
     // Index all Python files in the search paths for coverage mapping
     selector.index_files(&args.paths);
 
-    // 4. Determine which tests to run
-    let (tests_to_run, skipped_tests) = if args.no_cache {
-        // Run everything without caching
+    // 4. Determine which tests to run (handle @skip markers first)
+    let (mut tests_to_run, mut skipped_tests): (Vec<_>, Vec<_>) = if args.no_cache {
+        // Run everything without caching, but still respect @skip markers
         (all_tests.clone(), Vec::new())
     } else {
         let selection = selector.select_tests(&all_tests);
@@ -374,6 +384,18 @@ fn run_tests(args: Args) -> Result<()> {
             .collect();
         (to_run, skipped)
     };
+
+    // Handle @skip markers - move skipped tests to skipped_tests
+    let (marker_skipped, remaining): (Vec<_>, Vec<_>) =
+        tests_to_run.into_iter().partition(|item| item.is_skipped());
+
+    tests_to_run = remaining;
+    skipped_tests.extend(marker_skipped.into_iter().map(|item| {
+        let reason = item
+            .skip_reason()
+            .unwrap_or_else(|| "marked with @skip".to_string());
+        runner::skipped_result(&item, &reason)
+    }));
 
     // 5. Run tests with streaming output
     let printer = output::ProgressPrinter::new(args.verbose);
@@ -388,7 +410,7 @@ fn run_tests(args: Args) -> Result<()> {
     let run_results = runner::run_tests(
         &tests_to_run,
         !args.no_parallel,
-        args.jobs,
+        jobs,
         collect_coverage,
         runner::IsolationMode::parse(&args.isolation),
         |result| printer.print_result(result),

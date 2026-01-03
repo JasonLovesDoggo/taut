@@ -34,6 +34,7 @@ fn new_test_always_runs() {
         function: "test_new".to_string(),
         class: None,
         line: 1,
+        markers: vec![],
     };
 
     let decision = depdb.needs_run(&test);
@@ -59,6 +60,7 @@ fn failed_test_always_reruns() -> Result<()> {
         function: "test_fail".to_string(),
         class: None,
         line: 1,
+        markers: vec![],
     };
 
     // Record that the test failed
@@ -96,6 +98,7 @@ fn unchanged_passing_test_skips() -> Result<()> {
         function: "test_pass".to_string(),
         class: None,
         line: 1,
+        markers: vec![],
     };
 
     // Record that the test passed with some coverage
@@ -145,6 +148,7 @@ fn changed_dependency_reruns() -> Result<()> {
         function: "test_uses_helper".to_string(),
         class: None,
         line: 5,
+        markers: vec![],
     };
 
     // Record coverage: test touched lines 1-2 (helper) and 5-6 (test)
@@ -220,6 +224,7 @@ fn adding_blank_line_should_not_invalidate_cache() -> Result<()> {
         function: "test_foo".to_string(),
         class: None,
         line: 4,
+        markers: vec![],
     };
 
     let mut coverage = HashMap::new();
@@ -254,6 +259,7 @@ fn adding_blank_line_should_not_invalidate_cache() -> Result<()> {
         function: "test_foo".to_string(),
         class: None,
         line: 5, // Line number changed
+        markers: vec![],
     };
 
     let decision = depdb.needs_run(&test_v2);
@@ -292,6 +298,7 @@ fn adding_comment_should_not_invalidate_cache() -> Result<()> {
         function: "test_foo".to_string(),
         class: None,
         line: 2,
+        markers: vec![],
     };
 
     let mut coverage = HashMap::new();
@@ -310,6 +317,7 @@ fn adding_comment_should_not_invalidate_cache() -> Result<()> {
         function: "test_foo".to_string(),
         class: None,
         line: 3,
+        markers: vec![],
     };
 
     let decision = depdb.needs_run(&test_v2);
@@ -358,6 +366,7 @@ fn reordering_functions_with_same_content_should_not_invalidate() -> Result<()> 
         function: "test_uses_a".to_string(),
         class: None,
         line: 8,
+        markers: vec![],
     };
 
     let mut coverage = HashMap::new();
@@ -387,6 +396,7 @@ fn reordering_functions_with_same_content_should_not_invalidate() -> Result<()> 
         function: "test_uses_a".to_string(),
         class: None,
         line: 8,
+        markers: vec![],
     };
 
     let decision = depdb.needs_run(&test_v2);
@@ -429,6 +439,7 @@ fn relative_and_absolute_paths_should_match() -> Result<()> {
         function: "test_ok".to_string(),
         class: None,
         line: 1,
+        markers: vec![],
     };
 
     let mut coverage = HashMap::new();
@@ -441,6 +452,7 @@ fn relative_and_absolute_paths_should_match() -> Result<()> {
         function: "test_ok".to_string(),
         class: None,
         line: 1,
+        markers: vec![],
     };
 
     let decision_abs = depdb.needs_run(&test_abs);
@@ -483,6 +495,7 @@ fn different_files_same_function_name() -> Result<()> {
         function: "test_common".to_string(),
         class: None,
         line: 1,
+        markers: vec![],
     };
 
     let test_b = TestItem {
@@ -490,6 +503,7 @@ fn different_files_same_function_name() -> Result<()> {
         function: "test_common".to_string(),
         class: None,
         line: 1,
+        markers: vec![],
     };
 
     // Record coverage for test_a only
@@ -544,6 +558,7 @@ fn same_method_name_different_classes() -> Result<()> {
         function: "test_common".to_string(),
         class: Some("TestAlpha".to_string()),
         line: 2,
+        markers: vec![],
     };
 
     let test_beta = TestItem {
@@ -551,6 +566,7 @@ fn same_method_name_different_classes() -> Result<()> {
         function: "test_common".to_string(),
         class: Some("TestBeta".to_string()),
         line: 6,
+        markers: vec![],
     };
 
     // Record coverage for TestAlpha.test_common only
@@ -590,6 +606,7 @@ fn save_and_load_roundtrip() -> Result<()> {
         function: "test_ok".to_string(),
         class: None,
         line: 1,
+        markers: vec![],
     };
 
     let block_index = HashMap::new();
@@ -616,6 +633,7 @@ fn stats_accurate() -> Result<()> {
         function: "test_a".to_string(),
         class: None,
         line: 1,
+        markers: vec![],
     };
 
     let test_b = TestItem {
@@ -623,6 +641,7 @@ fn stats_accurate() -> Result<()> {
         function: "test_b".to_string(),
         class: None,
         line: 2,
+        markers: vec![],
     };
 
     // Record test_a as passed, test_b as failed
@@ -658,6 +677,7 @@ fn coverage_for_file_not_in_block_index_ignored() -> Result<()> {
         function: "test_ok".to_string(),
         class: None,
         line: 1,
+        markers: vec![],
     };
 
     // Record coverage for a file that's not in the index
@@ -695,6 +715,7 @@ fn coverage_for_line_not_in_any_block_handled() -> Result<()> {
         function: "bar".to_string(),
         class: None,
         line: 4,
+        markers: vec![],
     };
 
     // Coverage includes line 2-3 which are blank (not in any block)

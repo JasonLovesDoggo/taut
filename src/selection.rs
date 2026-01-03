@@ -63,7 +63,8 @@ impl TestSelector {
         }
     }
 
-    /// Select which tests need to run based on dependency changes
+    /// Select which tests need to run based on dependency changes.
+    /// Tests are sorted with failed tests first (fail-first strategy).
     pub fn select_tests(&self, all_tests: &[TestItem]) -> TestSelection {
         let mut to_run = Vec::new();
         let mut to_skip = Vec::new();
@@ -76,6 +77,19 @@ impl TestSelector {
                 to_skip.push((test.clone(), decision.reason().to_string()));
             }
         }
+
+        // Sort tests with failed tests first (fail-first strategy)
+        // This gives faster feedback on known failing tests
+        to_run.sort_by(|(_, decision_a), (_, decision_b)| {
+            use std::cmp::Ordering;
+            let a_failed = matches!(decision_a, TestRunDecision::FailedLastTime);
+            let b_failed = matches!(decision_b, TestRunDecision::FailedLastTime);
+            match (a_failed, b_failed) {
+                (true, false) => Ordering::Less,    // a failed, b didn't -> a first
+                (false, true) => Ordering::Greater, // b failed, a didn't -> b first
+                _ => Ordering::Equal,               // both same status -> keep order
+            }
+        });
 
         TestSelection { to_run, to_skip }
     }

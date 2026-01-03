@@ -1,7 +1,10 @@
 pub mod blocks;
 pub mod cache;
+pub mod config;
 pub mod depdb;
 pub mod discovery;
+pub mod filter;
+pub mod markers;
 pub mod output;
 pub mod runner;
 pub mod selection;

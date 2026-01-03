@@ -417,29 +417,48 @@ where
 {
     use std::sync::Mutex;
 
-    let results: Vec<TestResult> = if parallel && items.len() > 1 {
-        let callback = Mutex::new(on_result);
-        items
-            .par_iter()
-            .map(|item| {
-                let result = run_single_test(item, collect_coverage);
-                if let Ok(cb) = callback.lock() {
-                    cb(&result);
-                }
-                result
-            })
-            .collect()
+    // If parallel execution is enabled, separate tests by @parallel marker
+    // Tests with @parallel run concurrently, others run sequentially
+    if parallel && items.len() > 1 {
+        let (parallel_tests, sequential_tests): (Vec<_>, Vec<_>) =
+            items.iter().partition(|item| item.is_parallel());
+
+        let mut results = Vec::new();
+
+        // Run sequential tests first (no @parallel marker)
+        for item in &sequential_tests {
+            let result = run_single_test(item, collect_coverage);
+            on_result(&result);
+            results.push(result);
+        }
+
+        // Run parallel tests concurrently
+        if !parallel_tests.is_empty() {
+            let callback = Mutex::new(on_result);
+            let parallel_results: Vec<TestResult> = parallel_tests
+                .par_iter()
+                .map(|item| {
+                    let result = run_single_test(item, collect_coverage);
+                    if let Ok(cb) = callback.lock() {
+                        cb(&result);
+                    }
+                    result
+                })
+                .collect();
+            results.extend(parallel_results);
+        }
+
+        Ok(results)
     } else {
+        // Sequential execution (--no-parallel flag or single test)
         let mut results = Vec::new();
         for item in items {
             let result = run_single_test(item, collect_coverage);
             on_result(&result);
             results.push(result);
         }
-        results
-    };
-
-    Ok(results)
+        Ok(results)
+    }
 }
 
 fn run_tests_process_per_run<F>(
@@ -456,19 +475,37 @@ where
         return Ok(Vec::new());
     }
 
-    // Use worker pool for parallel execution with warm workers
-    let num_workers = if parallel {
-        jobs.unwrap_or_else(|| {
-            std::thread::available_parallelism()
-                .map(|n| n.get())
-                .unwrap_or(4)
-        })
-    } else {
-        1
-    };
+    // Separate tests by @parallel marker
+    let (parallel_tests, sequential_tests): (Vec<_>, Vec<_>) =
+        items.iter().cloned().partition(|item| item.is_parallel());
 
-    let pool = crate::worker_pool::WorkerPool::new(num_workers);
-    pool.run_tests(items, collect_coverage, on_result)
+    let mut results = Vec::new();
+
+    // Run sequential tests first with single worker
+    if !sequential_tests.is_empty() {
+        let pool = crate::worker_pool::WorkerPool::new(1);
+        let sequential_results = pool.run_tests(&sequential_tests, collect_coverage, on_result)?;
+        results.extend(sequential_results);
+    }
+
+    // Run parallel tests with worker pool (if parallel flag is set)
+    if !parallel_tests.is_empty() {
+        let num_workers = if parallel {
+            jobs.unwrap_or_else(|| {
+                std::thread::available_parallelism()
+                    .map(|n| n.get())
+                    .unwrap_or(4)
+            })
+        } else {
+            1
+        };
+
+        let pool = crate::worker_pool::WorkerPool::new(num_workers);
+        let parallel_results = pool.run_tests(&parallel_tests, collect_coverage, on_result)?;
+        results.extend(parallel_results);
+    }
+
+    Ok(results)
 }
 
 /// Create a skipped test result

@@ -202,6 +202,12 @@ fn incremental_run_reruns_changed_tests() -> Result<()> {
         ),
     )?;
 
+    // Delete __pycache__ to avoid stale bytecode
+    let pycache = project.path().join("__pycache__");
+    if pycache.exists() {
+        fs::remove_dir_all(&pycache)?;
+    }
+
     // Second run - should re-run and fail
     let result2 = run_taut(&project, &["."])?;
     result2.assert_failure();

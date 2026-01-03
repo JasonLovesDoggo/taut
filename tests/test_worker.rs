@@ -45,6 +45,7 @@ fn runs_passing_test() -> Result<()> {
         function: "test_ok".to_string(),
         class: None,
         line: 1,
+        markers: vec![],
     };
 
     let results = run_tests(
@@ -77,6 +78,7 @@ fn runs_failing_assertion() -> Result<()> {
         function: "test_fail".to_string(),
         class: None,
         line: 1,
+        markers: vec![],
     };
 
     let results = run_tests(
@@ -112,6 +114,7 @@ fn runs_failing_exception() -> Result<()> {
         function: "test_raises".to_string(),
         class: None,
         line: 1,
+        markers: vec![],
     };
 
     let results = run_tests(
@@ -154,6 +157,7 @@ fn captures_stdout() -> Result<()> {
         function: "test_prints".to_string(),
         class: None,
         line: 1,
+        markers: vec![],
     };
 
     let results = run_tests(
@@ -199,6 +203,7 @@ fn captures_stderr() -> Result<()> {
         function: "test_stderr".to_string(),
         class: None,
         line: 2,
+        markers: vec![],
     };
 
     let results = run_tests(
@@ -249,6 +254,7 @@ fn runs_async_test() -> Result<()> {
         function: "test_async".to_string(),
         class: None,
         line: 3,
+        markers: vec![],
     };
 
     let results = run_tests(
@@ -295,6 +301,7 @@ fn async_test_can_use_await() -> Result<()> {
         function: "test_await".to_string(),
         class: None,
         line: 7,
+        markers: vec![],
     };
 
     let results = run_tests(
@@ -335,6 +342,7 @@ fn runs_class_method_test() -> Result<()> {
         function: "test_add".to_string(),
         class: Some("TestMath".to_string()),
         line: 2,
+        markers: vec![],
     };
 
     let results = run_tests(
@@ -377,6 +385,7 @@ fn runs_setup_and_teardown() -> Result<()> {
         function: "test_uses_setup".to_string(),
         class: Some("TestWithSetup".to_string()),
         line: 8,
+        markers: vec![],
     };
 
     let results = run_tests(
@@ -420,6 +429,7 @@ fn setup_failure_fails_test() -> Result<()> {
         function: "test_never_runs".to_string(),
         class: Some("TestSetupFails".to_string()),
         line: 5,
+        markers: vec![],
     };
 
     let results = run_tests(
@@ -472,6 +482,7 @@ class TestTeardownAfterFailure:
         function: "test_fails".to_string(),
         class: Some("TestTeardownAfterFailure".to_string()),
         line: 10,
+        markers: vec![],
     };
 
     let results = run_tests(
@@ -526,6 +537,7 @@ fn imports_from_same_directory() -> Result<()> {
         function: "test_import".to_string(),
         class: None,
         line: 3,
+        markers: vec![],
     };
 
     let results = run_tests(
@@ -576,6 +588,7 @@ fn imports_from_subdirectory() -> Result<()> {
         function: "test_add".to_string(),
         class: None,
         line: 3,
+        markers: vec![],
     };
 
     let results = run_tests(
@@ -623,6 +636,7 @@ fn relative_import_fails_gracefully() -> Result<()> {
         function: "test_relative".to_string(),
         class: None,
         line: 3,
+        markers: vec![],
     };
 
     let results = run_tests(
@@ -669,6 +683,7 @@ fn import_error_captured() -> Result<()> {
         function: "test_never_runs".to_string(),
         class: None,
         line: 3,
+        markers: vec![],
     };
 
     let results = run_tests(
@@ -727,6 +742,7 @@ fn module_state_isolated_between_tests_process_per_test() -> Result<()> {
         function: "test_first".to_string(),
         class: None,
         line: 3,
+        markers: vec![],
     };
 
     let item2 = TestItem {
@@ -734,6 +750,7 @@ fn module_state_isolated_between_tests_process_per_test() -> Result<()> {
         function: "test_second".to_string(),
         class: None,
         line: 6,
+        markers: vec![],
     };
 
     // Run with process-per-test - each should get fresh state
@@ -795,6 +812,7 @@ fn module_state_may_leak_in_process_per_run() -> Result<()> {
         function: "test_first".to_string(),
         class: None,
         line: 3,
+        markers: vec![],
     };
 
     let item2 = TestItem {
@@ -802,6 +820,7 @@ fn module_state_may_leak_in_process_per_run() -> Result<()> {
         function: "test_second".to_string(),
         class: None,
         line: 6,
+        markers: vec![],
     };
 
     // Run with process-per-run - state MAY leak
@@ -852,6 +871,7 @@ fn coverage_collected_for_test_file() -> Result<()> {
         function: "test_with_helper".to_string(),
         class: None,
         line: 5,
+        markers: vec![],
     };
 
     let results = run_tests(
@@ -916,6 +936,7 @@ fn coverage_collected_for_imported_file() -> Result<()> {
         function: "test_add".to_string(),
         class: None,
         line: 3,
+        markers: vec![],
     };
 
     let results = run_tests(
@@ -967,6 +988,7 @@ fn coverage_excludes_stdlib() -> Result<()> {
         function: "test_uses_stdlib".to_string(),
         class: None,
         line: 5,
+        markers: vec![],
     };
 
     let results = run_tests(
@@ -1032,6 +1054,7 @@ fn coverage_works_in_async_test() -> Result<()> {
         function: "test_async_coverage".to_string(),
         class: None,
         line: 5,
+        markers: vec![],
     };
 
     let results = run_tests(
@@ -1085,6 +1108,7 @@ fn syntax_error_in_test_file_captured() -> Result<()> {
         function: "test_broken".to_string(),
         class: None,
         line: 1,
+        markers: vec![],
     };
 
     let results = run_tests(
@@ -1121,6 +1145,7 @@ fn test_function_not_found_captured() -> Result<()> {
         function: "test_does_not_exist".to_string(),
         class: None,
         line: 1,
+        markers: vec![],
     };
 
     let results = run_tests(
@@ -1169,6 +1194,7 @@ fn test_duration_tracked() -> Result<()> {
         function: "test_takes_time".to_string(),
         class: None,
         line: 3,
+        markers: vec![],
     };
 
     let results = run_tests(
