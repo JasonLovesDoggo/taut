@@ -20,3 +20,7 @@ def test_this_one_passes():
 
 def test_list_comparison():
     assert [1, 2, 3] == [1, 2, 4], "lists don't match"
+
+
+def test_dictionary_comparison():
+    assert {"a": 1, "b": 2} == {"a": 1, "b": 3}, "dictionaries don't match"
