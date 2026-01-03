@@ -27,12 +27,14 @@ pub fn ensure_cache_dir() -> std::io::Result<PathBuf> {
 }
 
 /// Clear all caches for the current project
-pub fn clear_cache() -> std::io::Result<()> {
+/// Returns the stats of what was cleared (size_bytes, file_count)
+pub fn clear_cache() -> std::io::Result<(u64, usize)> {
+    let stats = get_cache_stats();
     let dir = get_cache_dir();
     if dir.exists() {
         fs::remove_dir_all(&dir)?;
     }
-    Ok(())
+    Ok((stats.size_bytes, stats.file_count))
 }
 
 /// Get cache statistics
