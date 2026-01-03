@@ -1,0 +1,52 @@
+site_name: taut
+site_description: Fast Python test runner. Tests, without the overhead.
+site_url: https://taut.jsn.cam
+
+repo_name: taut
+repo_url: https://github.com/JasonLovesDoggo/taut
+
+theme:
+  name: material
+  palette:
+    - scheme: default
+      primary: deep purple
+      accent: purple
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: deep purple
+      accent: purple
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.sections
+    - content.code.copy
+    - content.code.annotate
+
+markdown_extensions:
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - admonition
+  - pymdownx.details
+  - toc:
+      permalink: true
+
+nav:
+  - Home: index.md
+  - Getting Started:
+    - Installation: getting-started/installation.md
+    - Quick Start: getting-started/quickstart.md
+  - Guide:
+    - Writing Tests: guide/writing-tests.md
+    - Markers: guide/markers.md
+    - Configuration: guide/configuration.md
+  - Reference:
+    - CLI: reference/cli.md
+    - Python API: reference/api.md
