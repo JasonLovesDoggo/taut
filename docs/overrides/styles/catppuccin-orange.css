@@ -112,11 +112,53 @@
 /* Search styling */
 .md-search__form {
   border-radius: 8px;
-  transition: box-shadow 0.2s ease;
+  transition: box-shadow 0.2s ease, background-color 0.2s ease;
 }
 
-.md-search__form:focus-within {
+/* Light mode search background */
+[data-md-color-scheme="default"] .md-search__form {
+  background-color: #e6e9ef;
+}
+
+[data-md-color-scheme="default"] .md-search__form:focus-within {
+  background-color: #eff1f5;
   box-shadow: 0 0 0 3px rgba(239, 159, 118, 0.15);
+}
+
+[data-md-color-scheme="default"] .md-search__input {
+  color: #4c4f69;
+  font-weight: 500;
+}
+
+[data-md-color-scheme="default"] .md-search__input::placeholder {
+  color: #6c6f85;
+}
+
+[data-md-color-scheme="default"] .md-search__input + .md-search__icon {
+  color: #6c6f85;
+}
+
+/* Dark mode search background */
+[data-md-color-scheme="slate"] .md-search__form {
+  background-color: #2a2e40;
+}
+
+[data-md-color-scheme="slate"] .md-search__form:focus-within {
+  background-color: #363a4f;
+  box-shadow: 0 0 0 3px rgba(245, 169, 127, 0.15);
+}
+
+[data-md-color-scheme="slate"] .md-search__input {
+  color: #cad3f5;
+  font-weight: 500;
+}
+
+[data-md-color-scheme="slate"] .md-search__input::placeholder {
+  color: #a5adcb;
+}
+
+[data-md-color-scheme="slate"] .md-search__input + .md-search__icon {
+  color: #a5adcb;
 }
 
 /* Navigation improvements */
