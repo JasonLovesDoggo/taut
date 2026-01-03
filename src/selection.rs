@@ -37,7 +37,7 @@ impl TestSelector {
     /// Index all Python files in given paths
     pub fn index_files(&mut self, paths: &[PathBuf]) {
         for path in paths {
-            if path.is_file() && path.extension().map_or(false, |e| e == "py") {
+            if path.is_file() && path.extension().is_some_and(|e| e == "py") {
                 self.index_single_file(path);
             } else if path.is_dir() {
                 for entry in WalkDir::new(path)
@@ -45,7 +45,7 @@ impl TestSelector {
                     .filter_map(|e| e.ok())
                     .filter(|e| {
                         e.file_type().is_file()
-                            && e.path().extension().map_or(false, |ext| ext == "py")
+                            && e.path().extension().is_some_and(|ext| ext == "py")
                     })
                 {
                     self.index_single_file(entry.path());
