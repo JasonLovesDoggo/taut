@@ -26,4 +26,7 @@ Runs your tests. That’s it.
 
 MIT
 
+## Development
+
+Install [`prek`](https://github.com/astral-sh/prek) and run `prek install` to enable the `cargo fmt` pre-commit hook defined in `.pre-commit-config.yaml`.
 

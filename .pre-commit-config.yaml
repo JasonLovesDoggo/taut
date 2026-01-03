@@ -1,0 +1,9 @@
+repos:
+  - repo: local
+    hooks:
+      - id: cargo-fmt
+        name: cargo fmt
+        description: Format the Rust workspace using cargo fmt.
+        entry: cargo fmt --all
+        language: system
+        pass_filenames: false
