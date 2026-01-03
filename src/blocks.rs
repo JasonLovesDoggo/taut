@@ -288,7 +288,7 @@ fn extract_lines(source: &str, start: usize, end: usize) -> String {
     source
         .lines()
         .enumerate()
-        .filter(|(i, _)| *i + 1 >= start && *i + 1 <= end)
+        .filter(|(i, _)| *i + 1 >= start && *i < end)
         .map(|(_, line)| line)
         .collect::<Vec<_>>()
         .join("\n")
