@@ -20,9 +20,23 @@ authors = [
 ]
 dynamic = ["version", "description", "readme"]
 
+[project.scripts]
+taut = "taut:main"
+
 [build-system]
 requires = ["maturin>=1.10,<2.0"]
 build-backend = "maturin"
 
 [tool.maturin]
-bindings = "bin"
+features = ["extension-module"]
+python-source = "python"
+module-name = "taut._taut"
+
+[dependency-groups]
+dev = [
+    "mkdocs>=1.6.1",
+    "mkdocs-material>=9.7.1",
+]
+
+[tool.taut]
+max_workers = 8
