@@ -1,29 +1,33 @@
-/* Catppuccin Orange Theme - Simple Colors Only */
+/* Catppuccin Orange Theme - Proper Colors */
 
 /* Light mode - Catppuccin Latte */
 [data-md-color-scheme="default"] {
-  --md-primary-fg-color: #fe640b;
-  --md-accent-fg-color: #df8e1d;
+  --md-primary-fg-color: #ef9f76;
+  --md-primary-fg-color--light: #fab387;
+  --md-primary-fg-color--dark: #d97f52;
+  --md-accent-fg-color: #fe640b;
   --md-default-bg-color: #eff1f5;
   --md-default-fg-color: #4c4f69;
   --md-code-bg-color: #e6e9ef;
   --md-code-fg-color: #4c4f69;
   --md-typeset-a-color: #fe640b;
-  --md-footer-bg-color: #dce0e8;
-  --md-footer-fg-color: #4c4f69;
+  --md-footer-bg-color: #e6e9ef;
+  --md-footer-fg-color: #5c5f77;
 }
 
 /* Dark mode - Catppuccin Macchiato */
 [data-md-color-scheme="slate"] {
   --md-primary-fg-color: #f5a97f;
+  --md-primary-fg-color--light: #f7c29a;
+  --md-primary-fg-color--dark: #c58766;
   --md-accent-fg-color: #eed49f;
   --md-default-bg-color: #24273a;
   --md-default-fg-color: #cad3f5;
   --md-code-bg-color: #1e2030;
   --md-code-fg-color: #cad3f5;
   --md-typeset-a-color: #f5a97f;
-  --md-footer-bg-color: #181926;
-  --md-footer-fg-color: #cad3f5;
+  --md-footer-bg-color: #1e2030;
+  --md-footer-fg-color: #b8c0e0;
 }
 
 /* Typography improvements */
@@ -75,7 +79,7 @@
 }
 
 .md-typeset table:not([class]) tr:hover {
-  background-color: rgba(254, 100, 11, 0.05);
+  background-color: rgba(239, 159, 118, 0.08);
 }
 
 /* Admonitions */
@@ -112,7 +116,7 @@
 }
 
 .md-search__form:focus-within {
-  box-shadow: 0 0 0 3px rgba(254, 100, 11, 0.2);
+  box-shadow: 0 0 0 3px rgba(239, 159, 118, 0.15);
 }
 
 /* Navigation improvements */
