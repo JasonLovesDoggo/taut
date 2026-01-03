@@ -5,3 +5,4 @@ pub mod discovery;
 pub mod output;
 pub mod runner;
 pub mod selection;
+pub mod worker_pool;

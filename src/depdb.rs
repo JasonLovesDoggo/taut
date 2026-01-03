@@ -157,11 +157,7 @@ impl DependencyDatabase {
 
     /// Get statistics
     pub fn stats(&self) -> DepDbStats {
-        let passed_tests = self
-            .tests
-            .values()
-            .filter(|t| t.last_run_passed)
-            .count();
+        let passed_tests = self.tests.values().filter(|t| t.last_run_passed).count();
         let failed_tests = self.tests.len() - passed_tests;
 
         DepDbStats {

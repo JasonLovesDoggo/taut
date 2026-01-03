@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
-use rustpython_parser::ast::{self, Ranged};
 use rustpython_parser::Parse;
+use rustpython_parser::ast::{self, Ranged};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;

@@ -76,7 +76,11 @@ impl ProgressPrinter {
         };
 
         let duration_str = if result.skipped {
-            result.skip_reason.as_deref().unwrap_or("skipped").to_string()
+            result
+                .skip_reason
+                .as_deref()
+                .unwrap_or("skipped")
+                .to_string()
         } else {
             format!("{}ms", result.duration.as_millis())
         };
@@ -88,7 +92,13 @@ impl ProgressPrinter {
         };
 
         let file = result.item.file.display();
-        println!("  {} {}::{} ({})", symbol, file.to_string().dimmed(), name, duration_str);
+        println!(
+            "  {} {}::{} ({})",
+            symbol,
+            file.to_string().dimmed(),
+            name,
+            duration_str
+        );
 
         if !result.passed && !result.skipped {
             if let Some(ref error) = result.error {
@@ -123,7 +133,12 @@ pub fn print_summary(results: &TestResults, failed_tests: &[TestResult]) {
                 result.item.function.clone()
             };
             println!();
-            println!("  {} {}::{}", "✗".red(), result.item.file.display().to_string().dimmed(), name);
+            println!(
+                "  {} {}::{}",
+                "✗".red(),
+                result.item.file.display().to_string().dimmed(),
+                name
+            );
             if let Some(ref error) = result.error {
                 println!("    {}", error.message.red());
                 println!("    {}:{}", result.item.file.display(), result.item.line);

@@ -27,6 +27,8 @@ pub struct TestResult {
     pub skipped: bool,
     pub skip_reason: Option<String>,
     pub coverage: Option<TestCoverage>,
+    pub stdout: Option<String>,
+    pub stderr: Option<String>,
 }
 
 pub struct TestResults {
@@ -40,11 +42,17 @@ impl TestResults {
     }
 
     pub fn passed_count(&self) -> usize {
-        self.results.iter().filter(|r| r.passed && !r.skipped).count()
+        self.results
+            .iter()
+            .filter(|r| r.passed && !r.skipped)
+            .count()
     }
 
     pub fn failed_count(&self) -> usize {
-        self.results.iter().filter(|r| !r.passed && !r.skipped).count()
+        self.results
+            .iter()
+            .filter(|r| !r.passed && !r.skipped)
+            .count()
     }
 
     pub fn skipped_count(&self) -> usize {
@@ -52,35 +60,64 @@ impl TestResults {
     }
 }
 
-/// Basic runner script without coverage
+/// Basic runner script without coverage.
+///
+/// Supports:
+/// - sync tests
+/// - async tests (`async def test_*`)
+/// - class-based tests with optional `setUp`/`tearDown`
 const RUNNER_SCRIPT: &str = r#"
 import sys
 import json
 import traceback
 import importlib.util
+import inspect
+import asyncio
+import io
+import contextlib
+import time
+
+
+
+def _run_maybe_async(callable_obj):
+    result = callable_obj()
+    if inspect.isawaitable(result):
+        asyncio.run(result)
+
 
 def run_test(test_file, test_name, class_name=None):
-    result = {"passed": False, "error": None}
+    result = {"passed": False, "error": None, "stdout": "", "stderr": ""}
 
     try:
-        spec = importlib.util.spec_from_file_location("test_module", test_file)
-        module = importlib.util.module_from_spec(spec)
-        sys.modules["test_module"] = module
-        spec.loader.exec_module(module)
+        import os
+        test_dir = os.path.dirname(os.path.abspath(test_file))
+        if test_dir not in sys.path:
+            sys.path.insert(0, test_dir)
 
-        if class_name:
-            cls = getattr(module, class_name)
-            instance = cls()
-            if hasattr(instance, "setUp"):
-                instance.setUp()
-            test_func = getattr(instance, test_name)
-            test_func()
-            if hasattr(instance, "tearDown"):
-                instance.tearDown()
-        else:
-            test_func = getattr(module, test_name)
-            test_func()
+        out_buf = io.StringIO()
+        err_buf = io.StringIO()
 
+        with contextlib.redirect_stdout(out_buf), contextlib.redirect_stderr(err_buf):
+            spec = importlib.util.spec_from_file_location("test_module", test_file)
+            module = importlib.util.module_from_spec(spec)
+            sys.modules["test_module"] = module
+            spec.loader.exec_module(module)
+
+            if class_name:
+                cls = getattr(module, class_name)
+                instance = cls()
+                if hasattr(instance, "setUp"):
+                    instance.setUp()
+                test_func = getattr(instance, test_name)
+                _run_maybe_async(test_func)
+                if hasattr(instance, "tearDown"):
+                    instance.tearDown()
+            else:
+                test_func = getattr(module, test_name)
+                _run_maybe_async(test_func)
+
+        result["stdout"] = out_buf.getvalue()
+        result["stderr"] = err_buf.getvalue()
         result["passed"] = True
     except AssertionError as e:
         result["error"] = {
@@ -93,23 +130,39 @@ def run_test(test_file, test_name, class_name=None):
             "traceback": traceback.format_exc(),
         }
 
-    print(json.dumps(result))
+    return result
+
 
 if __name__ == "__main__":
     info = json.loads(sys.argv[1])
-    run_test(info["file"], info["function"], info.get("class"))
+    result = run_test(info["file"], info["function"], info.get("class"))
+    print(json.dumps(result))
 "#;
 
-/// Runner script with sys.settrace coverage collection
+/// Runner script with sys.settrace coverage collection.
+///
+/// Note: this will be replaced with `sys.monitoring` (Python 3.12+) to reduce overhead,
+/// but for now this keeps existing behavior while adding async support.
 const RUNNER_SCRIPT_WITH_COVERAGE: &str = r#"
 import sys
 import json
 import traceback
 import importlib.util
 import os
+import inspect
+import asyncio
+import io
+import contextlib
+
+
+def _run_maybe_async(callable_obj):
+    result = callable_obj()
+    if inspect.isawaitable(result):
+        asyncio.run(result)
+
 
 def run_test(test_file, test_name, class_name=None):
-    result = {"passed": False, "error": None, "coverage": {}}
+    result = {"passed": False, "error": None, "coverage": {}, "stdout": "", "stderr": ""}
     executed_lines = {}
 
     def trace_function(frame, event, arg):
@@ -125,26 +178,36 @@ def run_test(test_file, test_name, class_name=None):
         return trace_function
 
     try:
+        test_dir = os.path.dirname(os.path.abspath(test_file))
+        if test_dir not in sys.path:
+            sys.path.insert(0, test_dir)
+
         sys.settrace(trace_function)
 
-        spec = importlib.util.spec_from_file_location("test_module", test_file)
-        module = importlib.util.module_from_spec(spec)
-        sys.modules["test_module"] = module
-        spec.loader.exec_module(module)
+        out_buf = io.StringIO()
+        err_buf = io.StringIO()
 
-        if class_name:
-            cls = getattr(module, class_name)
-            instance = cls()
-            if hasattr(instance, "setUp"):
-                instance.setUp()
-            test_func = getattr(instance, test_name)
-            test_func()
-            if hasattr(instance, "tearDown"):
-                instance.tearDown()
-        else:
-            test_func = getattr(module, test_name)
-            test_func()
+        with contextlib.redirect_stdout(out_buf), contextlib.redirect_stderr(err_buf):
+            spec = importlib.util.spec_from_file_location("test_module", test_file)
+            module = importlib.util.module_from_spec(spec)
+            sys.modules["test_module"] = module
+            spec.loader.exec_module(module)
 
+            if class_name:
+                cls = getattr(module, class_name)
+                instance = cls()
+                if hasattr(instance, "setUp"):
+                    instance.setUp()
+                test_func = getattr(instance, test_name)
+                _run_maybe_async(test_func)
+                if hasattr(instance, "tearDown"):
+                    instance.tearDown()
+            else:
+                test_func = getattr(module, test_name)
+                _run_maybe_async(test_func)
+
+        result["stdout"] = out_buf.getvalue()
+        result["stderr"] = err_buf.getvalue()
         result["passed"] = True
     except AssertionError as e:
         result["error"] = {
@@ -163,6 +226,7 @@ def run_test(test_file, test_name, class_name=None):
 
     print(json.dumps(result))
 
+
 if __name__ == "__main__":
     info = json.loads(sys.argv[1])
     run_test(info["file"], info["function"], info.get("class"))
@@ -180,6 +244,7 @@ fn run_single_test(item: &TestItem, collect_coverage: bool) -> TestResult {
     let script = if collect_coverage {
         RUNNER_SCRIPT_WITH_COVERAGE
     } else {
+        // In process-per-test mode we expect a single test JSON result.
         RUNNER_SCRIPT
     };
 
@@ -240,6 +305,12 @@ fn run_single_test(item: &TestItem, collect_coverage: bool) -> TestResult {
                     skipped: false,
                     skip_reason: None,
                     coverage,
+                    stdout: result
+                        .get("stdout")
+                        .and_then(|v| v.as_str().map(String::from)),
+                    stderr: result
+                        .get("stderr")
+                        .and_then(|v| v.as_str().map(String::from)),
                 }
             } else {
                 let stderr = String::from_utf8_lossy(&output.stderr);
@@ -254,6 +325,8 @@ fn run_single_test(item: &TestItem, collect_coverage: bool) -> TestResult {
                     skipped: false,
                     skip_reason: None,
                     coverage: None,
+                    stdout: None,
+                    stderr: None,
                 }
             }
         }
@@ -268,7 +341,24 @@ fn run_single_test(item: &TestItem, collect_coverage: bool) -> TestResult {
             skipped: false,
             skip_reason: None,
             coverage: None,
+            stdout: None,
+            stderr: None,
         },
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum IsolationMode {
+    ProcessPerTest,
+    ProcessPerRun,
+}
+
+impl IsolationMode {
+    pub fn parse(value: &str) -> Self {
+        match value {
+            "process-per-run" => Self::ProcessPerRun,
+            _ => Self::ProcessPerTest,
+        }
     }
 }
 
@@ -278,13 +368,12 @@ pub fn run_tests<F>(
     parallel: bool,
     jobs: Option<usize>,
     collect_coverage: bool,
+    isolation: IsolationMode,
     on_result: F,
 ) -> Result<TestResults>
 where
     F: Fn(&TestResult) + Send + Sync,
 {
-    use std::sync::Mutex;
-
     let start = Instant::now();
 
     if let Some(n) = jobs {
@@ -294,8 +383,34 @@ where
             .ok();
     }
 
+    let results: Vec<TestResult> = match isolation {
+        IsolationMode::ProcessPerRun => {
+            run_tests_process_per_run(items, parallel, jobs, collect_coverage, &on_result)?
+        }
+        IsolationMode::ProcessPerTest => {
+            run_tests_process_per_test(items, parallel, collect_coverage, &on_result)?
+        }
+    };
+
+    Ok(TestResults {
+        results,
+        total_duration: start.elapsed(),
+    })
+}
+
+fn run_tests_process_per_test<F>(
+    items: &[TestItem],
+    parallel: bool,
+    collect_coverage: bool,
+    on_result: &F,
+) -> Result<Vec<TestResult>>
+where
+    F: Fn(&TestResult) + Send + Sync,
+{
+    use std::sync::Mutex;
+
     let results: Vec<TestResult> = if parallel && items.len() > 1 {
-        let callback = Mutex::new(&on_result);
+        let callback = Mutex::new(on_result);
         items
             .par_iter()
             .map(|item| {
@@ -316,10 +431,36 @@ where
         results
     };
 
-    Ok(TestResults {
-        results,
-        total_duration: start.elapsed(),
-    })
+    Ok(results)
+}
+
+fn run_tests_process_per_run<F>(
+    items: &[TestItem],
+    parallel: bool,
+    jobs: Option<usize>,
+    collect_coverage: bool,
+    on_result: &F,
+) -> Result<Vec<TestResult>>
+where
+    F: Fn(&TestResult) + Send + Sync,
+{
+    if items.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Use worker pool for parallel execution with warm workers
+    let num_workers = if parallel {
+        jobs.unwrap_or_else(|| {
+            std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(4)
+        })
+    } else {
+        1
+    };
+
+    let pool = crate::worker_pool::WorkerPool::new(num_workers);
+    pool.run_tests(items, collect_coverage, on_result)
 }
 
 /// Create a skipped test result
@@ -332,5 +473,7 @@ pub fn skipped_result(item: &TestItem, reason: &str) -> TestResult {
         skipped: true,
         skip_reason: Some(reason.to_string()),
         coverage: None,
+        stdout: None,
+        stderr: None,
     }
 }

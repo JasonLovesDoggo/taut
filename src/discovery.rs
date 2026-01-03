@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use rustpython_parser::{ast, Parse};
+use rustpython_parser::{Parse, ast};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
@@ -12,7 +12,22 @@ pub struct TestItem {
     pub line: usize,
 }
 
-/// Find all test_*.py files in the given paths
+impl TestItem {
+    /// Returns a unique identifier for this test (e.g., "tests/test_example.py::TestMath::test_add")
+    pub fn id(&self) -> String {
+        let file = self.file.display();
+        match &self.class {
+            Some(class) => format!("{}::{}::{}", file, class, self.function),
+            None => format!("{}::{}", file, self.function),
+        }
+    }
+}
+
+/// Find all Python test files in the given paths.
+///
+/// A file is considered a test file if its name matches either:
+/// - `test_*.py`
+/// - `*_test*.py`
 pub fn find_test_files(paths: &[PathBuf]) -> Result<Vec<PathBuf>> {
     let mut test_files = Vec::new();
 
@@ -40,10 +55,19 @@ pub fn find_test_files(paths: &[PathBuf]) -> Result<Vec<PathBuf>> {
 }
 
 fn is_test_file(path: &Path) -> bool {
-    path.file_name()
-        .and_then(|n| n.to_str())
-        .map(|n| n.starts_with("test_") && n.ends_with(".py"))
-        .unwrap_or(false)
+    let Some(file_name) = path.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+
+    if !file_name.ends_with(".py") {
+        return false;
+    }
+
+    file_name.starts_with("test_") || file_name.starts_with("_test")
+}
+
+fn is_test_name(name: &str) -> bool {
+    name.starts_with("test_") || name.starts_with("_test")
 }
 
 /// Convert byte offset to line number (1-indexed)
@@ -68,7 +92,7 @@ pub fn extract_tests_from_file(path: &Path) -> Result<Vec<TestItem>> {
     for stmt in ast {
         match stmt {
             ast::Stmt::FunctionDef(func) => {
-                if func.name.as_str().starts_with("test_") {
+                if is_test_name(func.name.as_str()) {
                     items.push(TestItem {
                         file: path.to_path_buf(),
                         function: func.name.to_string(),
@@ -81,7 +105,7 @@ pub fn extract_tests_from_file(path: &Path) -> Result<Vec<TestItem>> {
                 if class.name.as_str().starts_with("Test") {
                     for body_stmt in &class.body {
                         if let ast::Stmt::FunctionDef(method) = body_stmt {
-                            if method.name.as_str().starts_with("test_") {
+                            if is_test_name(method.name.as_str()) {
                                 items.push(TestItem {
                                     file: path.to_path_buf(),
                                     function: method.name.to_string(),
