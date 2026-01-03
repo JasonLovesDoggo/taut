@@ -6,9 +6,12 @@ This module provides decorators for marking tests:
 - @skip - Skip a test, optionally with a reason
 - @mark - Add metadata to a test (slow=True, group="auth", etc.)
 - @parallel - Mark a test as parallel-safe
+
+And the CLI entry point:
+- main() - Run the taut CLI
 """
 
-from typing import Any, Callable, List, Optional, TypeVar, Union
+from typing import Any, Callable, Optional, TypeVar, Union
 
 F = TypeVar("F", bound=Callable[..., Any])
 
@@ -129,8 +132,14 @@ def parallel(func: Optional[F] = None) -> Any:
 
 
 # =============================================================================
+# CLI Entry Point (from Rust)
+# =============================================================================
+
+from taut._taut import main
+
+# =============================================================================
 # Exports
 # =============================================================================
 
-__all__ = ["skip", "mark", "parallel"]
+__all__ = ["skip", "mark", "parallel", "main"]
 __version__ = "0.1.0"

@@ -8,6 +8,7 @@ readme = "README.md"
 
 [lib]
 name = "taut"
+crate-type = ["cdylib", "rlib"]
 
 [[bin]]
 name = "taut"
@@ -15,6 +16,7 @@ path = "src/main.rs"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
+clap-markdown = "0.1"
 rustpython-parser = "0.4"
 rayon = "1.10"
 walkdir = "2"
@@ -22,12 +24,22 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 anyhow = "1"
 colored = "2"
-sha2 = "0.10"
+xxhash-rust = { version = "0.8", features = ["xxh64"] }
 dirs = "5"
 notify = "6"
 regex = "1"
 toml = "0.8"
 num-traits = "0.2.19"
+pyo3 = { version = "0.22", features = ["extension-module"], optional = true }
 
 [dev-dependencies]
 tempfile = "3"
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "integration"
+harness = false
+
+[features]
+default = []
+extension-module = ["pyo3/extension-module"]

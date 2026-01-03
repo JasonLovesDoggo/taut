@@ -1,6 +1,6 @@
-use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::PathBuf;
+use xxhash_rust::xxh64;
 
 /// Get the global cache directory for the current project.
 /// Returns: ~/.cache/taut/<project-hash>/ (platform-specific)
@@ -11,10 +11,8 @@ pub fn get_cache_dir() -> PathBuf {
 
     // Hash the current directory to isolate per-project caches
     let cwd = std::env::current_dir().unwrap_or_default();
-    let mut hasher = Sha256::new();
-    hasher.update(cwd.to_string_lossy().as_bytes());
-    let hash = format!("{:x}", hasher.finalize());
-    let project_hash = &hash[..16]; // First 16 chars
+    let hash = xxh64::xxh64(cwd.to_string_lossy().as_bytes(), 0);
+    let project_hash = &format!("{:x}", hash)[..16]; // First 16 chars
 
     cache_base.join(project_hash)
 }

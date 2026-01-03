@@ -7,3 +7,11 @@ repos:
         entry: cargo fmt --all
         language: system
         pass_filenames: false
+
+      - id: generate-cli-docs
+        name: generate cli docs
+        description: Regenerate CLI documentation from clap definitions.
+        entry: bash -c 'cargo build --quiet && ./target/debug/taut --markdown-help > docs/reference/cli.md && git add docs/reference/cli.md'
+        language: system
+        files: ^src/.*\.rs$
+        pass_filenames: false

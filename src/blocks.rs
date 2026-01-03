@@ -2,9 +2,9 @@ use anyhow::{Context, Result};
 use rustpython_parser::Parse;
 use rustpython_parser::ast::{self, Ranged};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use xxhash_rust::xxh64;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum BlockKind {
@@ -282,9 +282,8 @@ fn compute_checksum(source: &str) -> String {
         .collect::<Vec<_>>()
         .join("\n");
 
-    let mut hasher = Sha256::new();
-    hasher.update(normalized.as_bytes());
-    format!("{:x}", hasher.finalize())
+    let hash = xxh64::xxh64(normalized.as_bytes(), 0);
+    format!("{:x}", hash)
 }
 
 fn extract_lines(source: &str, start: usize, end: usize) -> String {
