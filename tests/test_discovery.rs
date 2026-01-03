@@ -449,7 +449,9 @@ fn extract_correct_line_numbers_with_decorators() -> Result<()> {
 
     let items = taut::discovery::extract_tests_from_file(&file)?;
 
-    // The line number should be the decorator line (first line of the function definition)
+    // For discovery, we report the def line (where the function name is)
+    // This is where someone would navigate to see the test.
+    // The blocks module uses decorator lines for checksum boundaries.
     let decorated = items
         .iter()
         .find(|i| i.function == "test_decorated")
@@ -459,16 +461,15 @@ fn extract_correct_line_numbers_with_decorators() -> Result<()> {
         .find(|i| i.function == "test_multi_decorated")
         .unwrap();
 
-    // Decorators are part of the function definition
-    assert!(
-        decorated.line <= 2,
-        "test_decorated should be on line 1 or 2, got {}",
-        decorated.line
+    // test_decorated is on line 2 (after @decorator on line 1)
+    assert_eq!(
+        decorated.line, 2,
+        "test_decorated should be on line 2 (the def line)"
     );
-    assert!(
-        multi.line <= 6,
-        "test_multi_decorated should be before line 6, got {}",
-        multi.line
+    // test_multi_decorated is on line 7 (after @decorator1 and @decorator2)
+    assert_eq!(
+        multi.line, 7,
+        "test_multi_decorated should be on line 7 (the def line)"
     );
 
     Ok(())
