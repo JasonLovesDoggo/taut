@@ -1,26 +1,28 @@
 //! Worker pool for running tests in warm Python processes.
 //!
-//! This module implements N long-lived Python workers that communicate via JSON-over-stdio.
-//! Workers stay alive across multiple test runs, eliminating interpreter startup overhead.
+//! This module implements N long-lived Python workers that communicate via MessagePack-over-stdio
+//! with length-prefixed binary protocol. Workers stay alive across multiple test runs, eliminating
+//! interpreter startup overhead.
 
 use crate::discovery::TestItem;
 use crate::runner::{TestCoverage, TestError, TestResult};
 use anyhow::Result;
+use crossbeam_channel::{Sender, bounded};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, BufWriter, Write};
+use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-/// Worker script that runs as a long-lived process, reading JSON requests from stdin
-/// and writing JSON responses to stdout (newline-delimited).
+/// Worker script that runs as a long-lived process, reading MessagePack requests from stdin
+/// and writing MessagePack responses to stdout (length-prefixed binary).
 const WORKER_SCRIPT: &str = r#"
 import sys
-import json
+import struct
 import traceback
 import importlib.util
 import inspect
@@ -29,6 +31,14 @@ import io
 import contextlib
 import os
 import time
+
+try:
+    import msgpack
+except ImportError:
+    # Fallback to JSON if msgpack not available
+    import json as msgpack
+    msgpack.packb = lambda obj, **kw: json.dumps(obj).encode()
+    msgpack.unpackb = lambda data, **kw: json.loads(data.decode())
 
 
 def _run_maybe_async(callable_obj):
@@ -199,23 +209,38 @@ def run_test(req):
     return result
 
 
+def _read_message():
+    """Read length-prefixed msgpack message from stdin."""
+    len_bytes = sys.stdin.buffer.read(4)
+    if not len_bytes or len(len_bytes) < 4:
+        return None
+
+    length = struct.unpack('<I', len_bytes)[0]
+    data = sys.stdin.buffer.read(length)
+    if len(data) < length:
+        return None
+
+    return msgpack.unpackb(data, raw=False)
+
+def _send_message(msg):
+    """Send length-prefixed msgpack message to stdout."""
+    data = msgpack.packb(msg, use_bin_type=True)
+    length = struct.pack('<I', len(data))
+    sys.stdout.buffer.write(length + data)
+    sys.stdout.buffer.flush()
+
 def main():
-    # Ensure unbuffered output
-    sys.stdout.reconfigure(line_buffering=True)
-
-    for line in sys.stdin:
-        line = line.strip()
-        if not line:
-            continue
-
+    while True:
         try:
-            req = json.loads(line)
+            req = _read_message()
+            if not req:
+                break
 
             if req.get("cmd") == "shutdown":
                 break
 
             if req.get("cmd") == "ping":
-                print(json.dumps({"id": req.get("id", 0), "pong": True}), flush=True)
+                _send_message({"id": req.get("id", 0), "pong": True})
                 continue
 
             resp = run_test(req)
@@ -230,7 +255,7 @@ def main():
                 "duration_sec": 0.0,
             }
 
-        print(json.dumps(resp), flush=True)
+        _send_message(resp)
 
 
 if __name__ == "__main__":
@@ -243,11 +268,43 @@ fn next_request_id() -> u64 {
     REQUEST_ID.fetch_add(1, Ordering::SeqCst)
 }
 
+/// Request sent to worker (serialized as MessagePack).
+#[derive(Serialize, Deserialize, Clone)]
+struct WorkerRequest {
+    id: u64,
+    file: String,
+    function: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    class: Option<String>,
+    collect_coverage: bool,
+}
+
+/// Response from worker (serialized as MessagePack).
+#[derive(Serialize, Deserialize)]
+struct WorkerResponse {
+    id: u64,
+    passed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<WorkerError>,
+    stdout: String,
+    stderr: String,
+    duration_sec: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    coverage: Option<HashMap<String, Vec<usize>>>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct WorkerError {
+    message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    traceback: Option<String>,
+}
+
 /// A single Python worker process.
 struct Worker {
     child: Child,
-    stdin: BufWriter<std::process::ChildStdin>,
-    stdout: BufReader<std::process::ChildStdout>,
+    stdin: std::process::ChildStdin,
+    stdout: std::process::ChildStdout,
 }
 
 impl Worker {
@@ -259,8 +316,8 @@ impl Worker {
             .stderr(Stdio::inherit()) // Let Python errors go to terminal
             .spawn()?;
 
-        let stdin = BufWriter::new(child.stdin.take().expect("stdin not captured"));
-        let stdout = BufReader::new(child.stdout.take().expect("stdout not captured"));
+        let stdin = child.stdin.take().expect("stdin not captured");
+        let stdout = child.stdout.take().expect("stdout not captured");
 
         Ok(Self {
             child,
@@ -269,106 +326,98 @@ impl Worker {
         })
     }
 
-    fn send_request(&mut self, req: &serde_json::Value) -> Result<()> {
-        let line = serde_json::to_string(req)?;
-        writeln!(self.stdin, "{}", line)?;
+    fn send_request(&mut self, req: &WorkerRequest) -> Result<()> {
+        let data = rmp_serde::to_vec(req)?;
+        let len = (data.len() as u32).to_le_bytes();
+        self.stdin.write_all(&len)?;
+        self.stdin.write_all(&data)?;
         self.stdin.flush()?;
         Ok(())
     }
 
-    fn read_response(&mut self) -> Result<serde_json::Value> {
-        let mut line = String::new();
-        let n = self.stdout.read_line(&mut line)?;
-        if n == 0 {
+    fn read_response(&mut self) -> Result<WorkerResponse> {
+        let mut len_bytes = [0u8; 4];
+        if self.stdout.read_exact(&mut len_bytes).is_err() {
             anyhow::bail!("Worker EOF (process died)");
         }
-        let resp: serde_json::Value = serde_json::from_str(&line)?;
+        let len = u32::from_le_bytes(len_bytes) as usize;
+
+        let mut data = vec![0u8; len];
+        self.stdout.read_exact(&mut data)?;
+
+        let resp: WorkerResponse = rmp_serde::from_slice(&data)?;
         Ok(resp)
     }
 
     fn run_test(&mut self, item: &TestItem, collect_coverage: bool) -> Result<TestResult> {
         let request_id = next_request_id();
-        let start = Instant::now();
 
-        let req = serde_json::json!({
-            "id": request_id,
-            "file": item.file.canonicalize().unwrap_or(item.file.clone()).to_string_lossy(),
-            "function": &item.function,
-            "class": &item.class,
-            "collect_coverage": collect_coverage,
-        });
+        let req = WorkerRequest {
+            id: request_id,
+            file: item
+                .file
+                .canonicalize()
+                .unwrap_or(item.file.clone())
+                .to_string_lossy()
+                .into_owned(),
+            function: item.function.clone(),
+            class: item.class.clone(),
+            collect_coverage,
+        };
 
         self.send_request(&req)?;
         let resp = self.read_response()?;
 
-        let duration = Duration::from_secs_f64(
-            resp.get("duration_sec")
-                .and_then(|v| v.as_f64())
-                .unwrap_or(start.elapsed().as_secs_f64()),
-        );
+        let duration = Duration::from_secs_f64(resp.duration_sec);
 
         let coverage = if collect_coverage {
-            resp.get("coverage").and_then(|c| {
-                let files: HashMap<PathBuf, Vec<usize>> = c
-                    .as_object()?
+            resp.coverage.as_ref().map(|coverage_map| {
+                let files: HashMap<PathBuf, Vec<usize>> = coverage_map
                     .iter()
-                    .map(|(k, v)| {
-                        let path = PathBuf::from(k);
-                        let lines: Vec<usize> = v
-                            .as_array()
-                            .map(|arr| {
-                                arr.iter()
-                                    .filter_map(|n| n.as_u64().map(|n| n as usize))
-                                    .collect()
-                            })
-                            .unwrap_or_default();
-                        (path, lines)
-                    })
+                    .map(|(k, v)| (PathBuf::from(k), v.clone()))
                     .collect();
-                Some(TestCoverage { files })
+                TestCoverage { files }
             })
         } else {
             None
         };
 
+        let error = resp.error.map(|e| TestError {
+            message: e.message,
+            traceback: e.traceback,
+        });
+
         Ok(TestResult {
             item: item.clone(),
-            passed: resp
-                .get("passed")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false),
+            passed: resp.passed,
             duration,
-            error: resp.get("error").and_then(|e| {
-                if e.is_null() {
-                    None
-                } else {
-                    Some(TestError {
-                        message: e
-                            .get("message")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("Unknown error")
-                            .to_string(),
-                        traceback: e
-                            .get("traceback")
-                            .and_then(|v| v.as_str())
-                            .map(String::from),
-                    })
-                }
-            }),
+            error,
             skipped: false,
             skip_reason: None,
             coverage,
-            stdout: resp
-                .get("stdout")
-                .and_then(|v| v.as_str().map(String::from)),
-            stderr: resp
-                .get("stderr")
-                .and_then(|v| v.as_str().map(String::from)),
+            stdout: if resp.stdout.is_empty() {
+                None
+            } else {
+                Some(resp.stdout)
+            },
+            stderr: if resp.stderr.is_empty() {
+                None
+            } else {
+                Some(resp.stderr)
+            },
         })
     }
 
     fn shutdown(&mut self) {
-        let _ = self.send_request(&serde_json::json!({"cmd": "shutdown"}));
+        // Send shutdown command as MessagePack
+        let mut shutdown_msg = std::collections::HashMap::new();
+        shutdown_msg.insert("cmd", "shutdown");
+        if let Ok(data) = rmp_serde::to_vec(&shutdown_msg) {
+            let len = (data.len() as u32).to_le_bytes();
+            let _ = self.stdin.write_all(&len);
+            let _ = self.stdin.write_all(&data);
+            let _ = self.stdin.flush();
+        }
         let _ = self.child.wait();
     }
 
@@ -437,8 +486,8 @@ impl WorkerPool {
             cvar.notify_all();
         }
 
-        // Channel to collect results
-        let (tx, rx): (Sender<Completed>, Receiver<Completed>) = channel();
+        // Channel to collect results (bounded to number of items for backpressure)
+        let (tx, rx) = bounded::<Completed>(items.len().max(1));
 
         // Spawn worker threads
         let mut handles = Vec::with_capacity(num_workers);
