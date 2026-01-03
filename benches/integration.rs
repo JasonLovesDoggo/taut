@@ -1,6 +1,9 @@
 use criterion::{Criterion, criterion_group, criterion_main};
 use std::fs;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use taut::discovery;
+use taut::runner::{self, IsolationMode};
 
 mod fixtures;
 use fixtures::FixtureProject;
@@ -19,6 +22,10 @@ criterion_group!(
              bench_filtered_small,
              bench_filtered_medium,
              bench_noop_overhead,
+             bench_execution_process_per_test,
+             bench_execution_process_per_run,
+             bench_execution_realistic_ppe,
+             bench_execution_realistic_ppr,
 );
 criterion_main!(benches);
 
@@ -182,6 +189,116 @@ fn bench_noop_overhead(c: &mut Criterion) {
                 let project_dir = vec![fixture.dir.path().to_path_buf()];
                 // Discover noop tests (minimal execution needed)
                 let _ = discovery::extract_tests(&project_dir, None);
+            },
+            criterion::BatchSize::SmallInput,
+        );
+    });
+}
+
+/// **Workflow 6: Execution with Process-Per-Test**
+/// Measure overhead of spawning Python for each test
+/// Each test gets its own Python process (~50ms startup overhead expected)
+fn bench_execution_process_per_test(c: &mut Criterion) {
+    c.bench_function("execution_process_per_test", |b| {
+        b.iter_batched(
+            || FixtureProject::noop(),
+            |fixture| {
+                let project_dir = vec![fixture.dir.path().to_path_buf()];
+                let tests = discovery::extract_tests(&project_dir, None).unwrap_or_default();
+
+                let counter = Arc::new(AtomicUsize::new(0));
+                let _ = runner::run_tests(
+                    &tests,
+                    true,  // parallel
+                    None,  // default jobs
+                    false, // no coverage
+                    IsolationMode::ProcessPerTest,
+                    |_result| {
+                        counter.fetch_add(1, Ordering::Relaxed);
+                    },
+                );
+            },
+            criterion::BatchSize::SmallInput,
+        );
+    });
+}
+
+/// **Workflow 7: Execution with Worker Pool (Process-Per-Run)**
+/// Measure efficiency of worker pool with warm reuse
+/// Tests share Python processes (~1-5ms overhead per test expected)
+fn bench_execution_process_per_run(c: &mut Criterion) {
+    c.bench_function("execution_process_per_run", |b| {
+        b.iter_batched(
+            || FixtureProject::noop(),
+            |fixture| {
+                let project_dir = vec![fixture.dir.path().to_path_buf()];
+                let tests = discovery::extract_tests(&project_dir, None).unwrap_or_default();
+
+                let counter = Arc::new(AtomicUsize::new(0));
+                let _ = runner::run_tests(
+                    &tests,
+                    true,  // parallel
+                    None,  // default jobs
+                    false, // no coverage
+                    IsolationMode::ProcessPerRun,
+                    |_result| {
+                        counter.fetch_add(1, Ordering::Relaxed);
+                    },
+                );
+            },
+            criterion::BatchSize::SmallInput,
+        );
+    });
+}
+
+/// **Workflow 8: Realistic Tests with Process-Per-Test**
+/// Tests with actual work (math, string ops, JSON parsing)
+fn bench_execution_realistic_ppe(c: &mut Criterion) {
+    c.bench_function("execution_realistic_ppe", |b| {
+        b.iter_batched(
+            || FixtureProject::realistic(),
+            |fixture| {
+                let project_dir = vec![fixture.dir.path().to_path_buf()];
+                let tests = discovery::extract_tests(&project_dir, None).unwrap_or_default();
+
+                let counter = Arc::new(AtomicUsize::new(0));
+                let _ = runner::run_tests(
+                    &tests,
+                    true,  // parallel
+                    None,  // default jobs
+                    false, // no coverage
+                    IsolationMode::ProcessPerTest,
+                    |_result| {
+                        counter.fetch_add(1, Ordering::Relaxed);
+                    },
+                );
+            },
+            criterion::BatchSize::SmallInput,
+        );
+    });
+}
+
+/// **Workflow 9: Realistic Tests with Process-Per-Run (Worker Pool)**
+/// Tests with actual work using worker pool reuse
+fn bench_execution_realistic_ppr(c: &mut Criterion) {
+    c.bench_function("execution_realistic_ppr", |b| {
+        b.iter_batched(
+            || FixtureProject::realistic(),
+            |fixture| {
+                let project_dir = vec![fixture.dir.path().to_path_buf()];
+                let tests = discovery::extract_tests(&project_dir, None).unwrap_or_default();
+
+                let counter = Arc::new(AtomicUsize::new(0));
+                let _ = runner::run_tests(
+                    &tests,
+                    true,  // parallel
+                    None,  // default jobs
+                    false, // no coverage
+                    IsolationMode::ProcessPerRun,
+                    |_result| {
+                        counter.fetch_add(1, Ordering::Relaxed);
+                    },
+                );
             },
             criterion::BatchSize::SmallInput,
         );

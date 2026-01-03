@@ -9,14 +9,14 @@ theme:
   name: material
   palette:
     - scheme: default
-      primary: deep purple
-      accent: purple
+      primary: orange
+      accent: deep-orange
       toggle:
         icon: material/brightness-7
         name: Switch to dark mode
     - scheme: slate
-      primary: deep purple
-      accent: purple
+      primary: orange
+      accent: deep-orange
       toggle:
         icon: material/brightness-4
         name: Switch to light mode
@@ -26,6 +26,9 @@ theme:
     - navigation.sections
     - content.code.copy
     - content.code.annotate
+    - search.suggest
+    - search.highlight
+  custom_dir: docs/overrides
 
 markdown_extensions:
   - pymdownx.highlight:
@@ -49,4 +52,3 @@ nav:
     - Configuration: guide/configuration.md
   - Reference:
     - CLI: reference/cli.md
-    - Python API: reference/api.md
