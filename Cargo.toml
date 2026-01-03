@@ -2,11 +2,23 @@
 name = "taut"
 version = "0.1.0"
 edition = "2024"
+description = "Tests, without the overhead."
+license = "MIT"
+readme = "README.md"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [lib]
 name = "taut"
-crate-type = ["cdylib"]
+
+[[bin]]
+name = "taut"
+path = "src/main.rs"
 
 [dependencies]
-pyo3 = "0.27.0"
+clap = { version = "4", features = ["derive"] }
+rustpython-parser = "0.4"
+rayon = "1.10"
+walkdir = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+colored = "2"

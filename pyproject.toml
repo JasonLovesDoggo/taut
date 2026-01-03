@@ -1,20 +1,33 @@
 [project]
 name = "taut"
 requires-python = ">=3.8"
+keywords = ["python", "testing", "test-runner", "performance", "parallel", "cli", "rust"]
 classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
     "Programming Language :: Rust",
-    "Prodgramming Language :: Python :: Implementation :: CPython",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: Implementation :: CPython",
     "Programming Language :: Python :: Implementation :: PyPy",
+    "Topic :: Software Development :: Testing",
+    "Topic :: Software Development :: Testing :: Unit",
 ]
-dynamic = ["version"]
-
 authors = [
-    {email = "git@jsn.cam"},
-    {name = "Jason Cameron"}
+    { name = "Jason Cameron", email = "git@jsn.cam" }
 ]
-
+dynamic = ["version", "description", "readme"]
 
 [build-system]
 requires = ["maturin>=1.10,<2.0"]
 build-backend = "maturin"
 
+[tool.maturin]
+bindings = "bin"
