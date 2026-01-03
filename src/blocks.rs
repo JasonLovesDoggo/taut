@@ -241,7 +241,10 @@ impl FileBlocks {
                         .body
                         .iter()
                         .filter_map(|s| {
-                            if matches!(s, ast::Stmt::FunctionDef(_) | ast::Stmt::AsyncFunctionDef(_)) {
+                            if matches!(
+                                s,
+                                ast::Stmt::FunctionDef(_) | ast::Stmt::AsyncFunctionDef(_)
+                            ) {
                                 Some(offset_to_line(source, s.range().start().into()) - 1)
                             } else {
                                 None

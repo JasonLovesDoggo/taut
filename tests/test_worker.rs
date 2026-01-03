@@ -20,7 +20,7 @@ use tempfile::TempDir;
 
 use helpers::dedent;
 use taut::discovery::TestItem;
-use taut::runner::{run_tests, IsolationMode};
+use taut::runner::{IsolationMode, run_tests};
 
 fn write_file(path: &std::path::Path, content: &str) -> Result<()> {
     if let Some(parent) = path.parent() {
@@ -67,7 +67,10 @@ fn runs_passing_test() -> Result<()> {
 fn runs_failing_assertion() -> Result<()> {
     let tmp = TempDir::new()?;
     let test_file = tmp.path().join("test_fail.py");
-    write_file(&test_file, "def test_fail(): assert False, 'expected failure'\n")?;
+    write_file(
+        &test_file,
+        "def test_fail(): assert False, 'expected failure'\n",
+    )?;
 
     let item = TestItem {
         file: test_file,
@@ -102,10 +105,7 @@ fn runs_failing_assertion() -> Result<()> {
 fn runs_failing_exception() -> Result<()> {
     let tmp = TempDir::new()?;
     let test_file = tmp.path().join("test_exc.py");
-    write_file(
-        &test_file,
-        "def test_raises(): raise ValueError('boom')\n",
-    )?;
+    write_file(&test_file, "def test_raises(): raise ValueError('boom')\n")?;
 
     let item = TestItem {
         file: test_file,
@@ -140,11 +140,13 @@ fn captures_stdout() -> Result<()> {
     let test_file = tmp.path().join("test_print.py");
     write_file(
         &test_file,
-        &dedent(r#"
+        &dedent(
+            r#"
             def test_prints():
                 print("hello from test")
                 assert True
-        "#),
+        "#,
+        ),
     )?;
 
     let item = TestItem {
@@ -182,12 +184,14 @@ fn captures_stderr() -> Result<()> {
     let test_file = tmp.path().join("test_stderr.py");
     write_file(
         &test_file,
-        &dedent(r#"
+        &dedent(
+            r#"
             import sys
             def test_stderr():
                 print("error message", file=sys.stderr)
                 assert True
-        "#),
+        "#,
+        ),
     )?;
 
     let item = TestItem {
@@ -229,13 +233,15 @@ fn runs_async_test() -> Result<()> {
     let test_file = tmp.path().join("test_async.py");
     write_file(
         &test_file,
-        &dedent(r#"
+        &dedent(
+            r#"
             import asyncio
 
             async def test_async():
                 await asyncio.sleep(0.001)
                 assert True
-        "#),
+        "#,
+        ),
     )?;
 
     let item = TestItem {
@@ -269,7 +275,8 @@ fn async_test_can_use_await() -> Result<()> {
     let test_file = tmp.path().join("test_async_await.py");
     write_file(
         &test_file,
-        &dedent(r#"
+        &dedent(
+            r#"
             import asyncio
 
             async def async_helper():
@@ -279,7 +286,8 @@ fn async_test_can_use_await() -> Result<()> {
             async def test_await():
                 result = await async_helper()
                 assert result == 42
-        "#),
+        "#,
+        ),
     )?;
 
     let item = TestItem {
@@ -313,11 +321,13 @@ fn runs_class_method_test() -> Result<()> {
     let test_file = tmp.path().join("test_class.py");
     write_file(
         &test_file,
-        &dedent(r#"
+        &dedent(
+            r#"
             class TestMath:
                 def test_add(self):
                     assert 1 + 1 == 2
-        "#),
+        "#,
+        ),
     )?;
 
     let item = TestItem {
@@ -347,7 +357,8 @@ fn runs_setup_and_teardown() -> Result<()> {
     let test_file = tmp.path().join("test_setup.py");
     write_file(
         &test_file,
-        &dedent(r#"
+        &dedent(
+            r#"
             class TestWithSetup:
                 def setUp(self):
                     self.value = 42
@@ -357,7 +368,8 @@ fn runs_setup_and_teardown() -> Result<()> {
 
                 def test_uses_setup(self):
                     assert self.value == 42
-        "#),
+        "#,
+        ),
     )?;
 
     let item = TestItem {
@@ -391,14 +403,16 @@ fn setup_failure_fails_test() -> Result<()> {
     let test_file = tmp.path().join("test_setup_fail.py");
     write_file(
         &test_file,
-        &dedent(r#"
+        &dedent(
+            r#"
             class TestSetupFails:
                 def setUp(self):
                     raise RuntimeError("setup failed")
 
                 def test_never_runs(self):
                     assert True
-        "#),
+        "#,
+        ),
     )?;
 
     let item = TestItem {
@@ -497,12 +511,14 @@ fn imports_from_same_directory() -> Result<()> {
     // Create test that imports it
     write_file(
         &tmp.path().join("test_import.py"),
-        &dedent(r#"
+        &dedent(
+            r#"
             from helper import get_value
 
             def test_import():
                 assert get_value() == 42
-        "#),
+        "#,
+        ),
     )?;
 
     let item = TestItem {
@@ -545,12 +561,14 @@ fn imports_from_subdirectory() -> Result<()> {
     // Create test
     write_file(
         &tmp.path().join("test_subdir.py"),
-        &dedent(r#"
+        &dedent(
+            r#"
             from utils.math import add
 
             def test_add():
                 assert add(1, 2) == 3
-        "#),
+        "#,
+        ),
     )?;
 
     let item = TestItem {
@@ -590,12 +608,14 @@ fn relative_import_fails_gracefully() -> Result<()> {
     write_file(&tmp.path().join("helper.py"), "VALUE = 42\n")?;
     write_file(
         &tmp.path().join("test_relative.py"),
-        &dedent(r#"
+        &dedent(
+            r#"
             from . import helper
 
             def test_relative():
                 assert helper.VALUE == 42
-        "#),
+        "#,
+        ),
     )?;
 
     let item = TestItem {
@@ -634,12 +654,14 @@ fn import_error_captured() -> Result<()> {
 
     write_file(
         &tmp.path().join("test_bad_import.py"),
-        &dedent(r#"
+        &dedent(
+            r#"
             import nonexistent_module_xyz
 
             def test_never_runs():
                 assert True
-        "#),
+        "#,
+        ),
     )?;
 
     let item = TestItem {
@@ -687,7 +709,8 @@ fn module_state_isolated_between_tests_process_per_test() -> Result<()> {
     // Create two tests that both increment
     write_file(
         &tmp.path().join("test_state.py"),
-        &dedent(r#"
+        &dedent(
+            r#"
             from state import increment
 
             def test_first():
@@ -695,7 +718,8 @@ fn module_state_isolated_between_tests_process_per_test() -> Result<()> {
 
             def test_second():
                 assert increment() == 1
-        "#),
+        "#,
+        ),
     )?;
 
     let item1 = TestItem {
@@ -752,7 +776,8 @@ fn module_state_may_leak_in_process_per_run() -> Result<()> {
 
     write_file(
         &tmp.path().join("test_state.py"),
-        &dedent(r#"
+        &dedent(
+            r#"
             from state import increment
 
             def test_first():
@@ -761,7 +786,8 @@ fn module_state_may_leak_in_process_per_run() -> Result<()> {
             def test_second():
                 # In process-per-run, this would be 2 if state leaks
                 assert increment() == 1
-        "#),
+        "#,
+        ),
     )?;
 
     let item1 = TestItem {
@@ -810,13 +836,15 @@ fn coverage_collected_for_test_file() -> Result<()> {
 
     write_file(
         &test_file,
-        &dedent(r#"
+        &dedent(
+            r#"
             def helper():
                 return 1
 
             def test_with_helper():
                 assert helper() == 1
-        "#),
+        "#,
+        ),
     )?;
 
     let item = TestItem {
@@ -863,20 +891,24 @@ fn coverage_collected_for_imported_file() -> Result<()> {
 
     write_file(
         &tmp.path().join("mymodule.py"),
-        &dedent(r#"
+        &dedent(
+            r#"
             def add(a, b):
                 return a + b
-        "#),
+        "#,
+        ),
     )?;
 
     write_file(
         &tmp.path().join("test_import_cov.py"),
-        &dedent(r#"
+        &dedent(
+            r#"
             from mymodule import add
 
             def test_add():
                 assert add(1, 2) == 3
-        "#),
+        "#,
+        ),
     )?;
 
     let item = TestItem {
@@ -918,14 +950,16 @@ fn coverage_excludes_stdlib() -> Result<()> {
 
     write_file(
         &tmp.path().join("test_stdlib.py"),
-        &dedent(r#"
+        &dedent(
+            r#"
             import os
             import json
 
             def test_uses_stdlib():
                 data = json.dumps({"key": "value"})
                 assert os.path.sep in "/" or os.path.sep == "\\"
-        "#),
+        "#,
+        ),
     )?;
 
     let item = TestItem {
@@ -971,22 +1005,26 @@ fn coverage_works_in_async_test() -> Result<()> {
 
     write_file(
         &tmp.path().join("async_helper.py"),
-        &dedent(r#"
+        &dedent(
+            r#"
             async def async_add(a, b):
                 return a + b
-        "#),
+        "#,
+        ),
     )?;
 
     write_file(
         &tmp.path().join("test_async_cov.py"),
-        &dedent(r#"
+        &dedent(
+            r#"
             import asyncio
             from async_helper import async_add
 
             async def test_async_coverage():
                 result = await async_add(1, 2)
                 assert result == 3
-        "#),
+        "#,
+        ),
     )?;
 
     let item = TestItem {
@@ -1115,13 +1153,15 @@ fn test_duration_tracked() -> Result<()> {
 
     write_file(
         &tmp.path().join("test_slow.py"),
-        &dedent(r#"
+        &dedent(
+            r#"
             import time
 
             def test_takes_time():
                 time.sleep(0.1)
                 assert True
-        "#),
+        "#,
+        ),
     )?;
 
     let item = TestItem {

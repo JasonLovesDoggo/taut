@@ -211,8 +211,7 @@ pub fn run_taut_in_dir(dir: &Path, args: &[&str]) -> Result<TautResult> {
 /// Find the taut binary in target directory.
 fn find_taut_binary() -> Result<PathBuf> {
     // Try debug build first, then release
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
-        .unwrap_or_else(|_| ".".to_string());
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
     let manifest_path = PathBuf::from(manifest_dir);
 
     let debug_path = manifest_path.join("target/debug/taut");
@@ -336,11 +335,13 @@ mod tests {
     #[test]
     fn test_temp_project_write_file() {
         let mut project = TempProject::new().unwrap();
-        let path = project.write_file("test_foo.py", "def test_ok(): pass").unwrap();
-        
+        let path = project
+            .write_file("test_foo.py", "def test_ok(): pass")
+            .unwrap();
+
         assert!(path.exists());
         assert!(project.file_exists("test_foo.py"));
-        
+
         let content = project.read_file("test_foo.py").unwrap();
         assert_eq!(content, "def test_ok(): pass");
     }
@@ -348,8 +349,10 @@ mod tests {
     #[test]
     fn test_temp_project_subdirectory() {
         let mut project = TempProject::new().unwrap();
-        project.write_file("subdir/test_nested.py", "def test_nested(): pass").unwrap();
-        
+        project
+            .write_file("subdir/test_nested.py", "def test_nested(): pass")
+            .unwrap();
+
         assert!(project.file_exists("subdir/test_nested.py"));
     }
 }

@@ -13,7 +13,7 @@ use std::fs;
 
 use anyhow::Result;
 
-use helpers::{dedent, run_taut, TempProject};
+use helpers::{TempProject, dedent, run_taut};
 
 // =============================================================================
 // Basic Execution Tests
@@ -25,13 +25,15 @@ fn run_simple_passing_tests() -> Result<()> {
 
     project.write_file(
         "test_simple.py",
-        &dedent(r#"
+        &dedent(
+            r#"
             def test_one():
                 assert True
 
             def test_two():
                 assert 1 + 1 == 2
-        "#),
+        "#,
+        ),
     )?;
 
     let result = run_taut(&project, &["."])?;
@@ -49,13 +51,15 @@ fn run_failing_tests() -> Result<()> {
 
     project.write_file(
         "test_fail.py",
-        &dedent(r#"
+        &dedent(
+            r#"
             def test_pass():
                 assert True
 
             def test_fail():
                 assert False, "expected failure"
-        "#),
+        "#,
+        ),
     )?;
 
     let result = run_taut(&project, &["."])?;
@@ -76,11 +80,13 @@ fn run_mixed_pass_fail() -> Result<()> {
 
     project.write_file(
         "test_mixed.py",
-        &dedent(r#"
+        &dedent(
+            r#"
             def test_pass1(): assert True
             def test_pass2(): assert True
             def test_fail(): assert False
-        "#),
+        "#,
+        ),
     )?;
 
     let result = run_taut(&project, &["."])?;
@@ -129,13 +135,15 @@ fn incremental_run_skips_unchanged_tests() -> Result<()> {
 
     project.write_file(
         "test_inc.py",
-        &dedent(r#"
+        &dedent(
+            r#"
             def test_one():
                 assert True
 
             def test_two():
                 assert True
-        "#),
+        "#,
+        ),
     )?;
 
     // First run - both tests should run
@@ -165,13 +173,15 @@ fn incremental_run_reruns_changed_tests() -> Result<()> {
 
     project.write_file(
         "test_change.py",
-        &dedent(r#"
+        &dedent(
+            r#"
             def helper():
                 return 1
 
             def test_uses_helper():
                 assert helper() == 1
-        "#),
+        "#,
+        ),
     )?;
 
     // First run
@@ -181,13 +191,15 @@ fn incremental_run_reruns_changed_tests() -> Result<()> {
     // Modify the helper
     project.write_file(
         "test_change.py",
-        &dedent(r#"
+        &dedent(
+            r#"
             def helper():
                 return 2
 
             def test_uses_helper():
                 assert helper() == 1
-        "#),
+        "#,
+        ),
     )?;
 
     // Second run - should re-run and fail
@@ -227,11 +239,13 @@ fn filter_option_limits_tests() -> Result<()> {
 
     project.write_file(
         "test_filter.py",
-        &dedent(r#"
+        &dedent(
+            r#"
             def test_alpha(): assert True
             def test_beta(): assert True
             def test_gamma(): assert True
-        "#),
+        "#,
+        ),
     )?;
 
     let result = run_taut(&project, &["-k", "alpha", "."])?;
@@ -254,10 +268,12 @@ fn no_cache_runs_all_tests() -> Result<()> {
 
     project.write_file(
         "test_nocache.py",
-        &dedent(r#"
+        &dedent(
+            r#"
             def test_one(): assert True
             def test_two(): assert True
-        "#),
+        "#,
+        ),
     )?;
 
     // First run
@@ -282,10 +298,7 @@ fn no_cache_runs_all_tests() -> Result<()> {
 fn verbose_option_shows_test_names() -> Result<()> {
     let mut project = TempProject::new()?;
 
-    project.write_file(
-        "test_verbose.py",
-        "def test_specific_name(): assert True\n",
-    )?;
+    project.write_file("test_verbose.py", "def test_specific_name(): assert True\n")?;
 
     let result = run_taut(&project, &["--verbose", "."])?;
     result.assert_success();
@@ -344,13 +357,15 @@ fn list_command_shows_discovered_tests() -> Result<()> {
 
     project.write_file(
         "test_list.py",
-        &dedent(r#"
+        &dedent(
+            r#"
             def test_alpha(): pass
             def test_beta(): pass
 
             class TestClass:
                 def test_method(self): pass
-        "#),
+        "#,
+        ),
     )?;
 
     let result = run_taut(&project, &["list", "."])?;
@@ -527,11 +542,13 @@ fn test_with_unicode_output() -> Result<()> {
 
     project.write_file(
         "test_unicode.py",
-        &dedent(r#"
+        &dedent(
+            r#"
             def test_unicode():
                 print("Hello 世界 🎉")
                 assert True
-        "#),
+        "#,
+        ),
     )?;
 
     let result = run_taut(&project, &["."])?;
@@ -545,10 +562,7 @@ fn test_in_subdirectory() -> Result<()> {
     let mut project = TempProject::new()?;
 
     project.mkdir("tests/unit")?;
-    project.write_file(
-        "tests/unit/test_deep.py",
-        "def test_deep(): assert True\n",
-    )?;
+    project.write_file("tests/unit/test_deep.py", "def test_deep(): assert True\n")?;
 
     let result = run_taut(&project, &["."])?;
     result.assert_success();
@@ -568,7 +582,8 @@ fn async_tests_run_correctly() -> Result<()> {
 
     project.write_file(
         "test_async.py",
-        &dedent(r#"
+        &dedent(
+            r#"
             import asyncio
 
             async def test_async():
@@ -577,7 +592,8 @@ fn async_tests_run_correctly() -> Result<()> {
 
             def test_sync():
                 assert True
-        "#),
+        "#,
+        ),
     )?;
 
     let result = run_taut(&project, &["."])?;
@@ -605,7 +621,8 @@ fn class_based_tests_run_correctly() -> Result<()> {
 
     project.write_file(
         "test_class.py",
-        &dedent(r#"
+        &dedent(
+            r#"
             class TestMath:
                 def test_add(self):
                     assert 1 + 1 == 2
@@ -616,7 +633,8 @@ fn class_based_tests_run_correctly() -> Result<()> {
             class TestString:
                 def test_upper(self):
                     assert "hello".upper() == "HELLO"
-        "#),
+        "#,
+        ),
     )?;
 
     let result = run_taut(&project, &["."])?;
@@ -640,13 +658,15 @@ fn failure_shows_traceback() -> Result<()> {
 
     project.write_file(
         "test_traceback.py",
-        &dedent(r#"
+        &dedent(
+            r#"
             def helper():
                 raise ValueError("from helper")
 
             def test_fails():
                 helper()
-        "#),
+        "#,
+        ),
     )?;
 
     let result = run_taut(&project, &["."])?;
@@ -678,8 +698,7 @@ fn assertion_shows_message() -> Result<()> {
 
     // The assertion message should appear somewhere
     assert!(
-        result.stdout.contains("numbers should match")
-            || result.stdout.contains("AssertionError"),
+        result.stdout.contains("numbers should match") || result.stdout.contains("AssertionError"),
         "Should show assertion message or error"
     );
 

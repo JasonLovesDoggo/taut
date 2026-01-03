@@ -328,10 +328,7 @@ fn handle_cache_command(action: CacheAction) -> Result<()> {
             let (size_bytes, file_count) = cache::clear_cache()?;
             if file_count > 0 {
                 let size_kb = size_bytes as f64 / 1024.0;
-                println!(
-                    "Cache cleared: {:.1} KB ({} files)",
-                    size_kb, file_count
-                );
+                println!("Cache cleared: {:.1} KB ({} files)", size_kb, file_count);
             } else {
                 println!("Cache already empty.");
             }

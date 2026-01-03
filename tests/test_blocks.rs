@@ -162,21 +162,20 @@ fn async_function_extracted_as_function_block() {
     // Async functions fall through to top-level code
     //
     // This test will FAIL until fixed.
-    let code = &dedent(r#"
+    let code = &dedent(
+        r#"
         async def async_helper():
             await something()
 
         def sync_helper():
             pass
-    "#);
+    "#,
+    );
 
     let blocks = FileBlocks::from_source(code, "test.py").unwrap();
 
     // Find the async function block
-    let async_block = blocks
-        .blocks
-        .iter()
-        .find(|b| b.id.name == "async_helper");
+    let async_block = blocks.blocks.iter().find(|b| b.id.name == "async_helper");
 
     assert!(
         async_block.is_some(),
@@ -195,14 +194,16 @@ fn async_function_extracted_as_function_block() {
 
 #[test]
 fn async_method_extracted_correctly() {
-    let code = &dedent(r#"
+    let code = &dedent(
+        r#"
         class TestAsync:
             async def test_async(self):
                 await something()
 
             def test_sync(self):
                 pass
-    "#);
+    "#,
+    );
 
     let blocks = FileBlocks::from_source(code, "test.py").unwrap();
 
@@ -299,11 +300,13 @@ fn extract_simple_function() {
 
 #[test]
 fn extract_decorated_function() {
-    let code = &dedent(r#"
+    let code = &dedent(
+        r#"
         @decorator
         def foo():
             pass
-    "#);
+    "#,
+    );
 
     let blocks = FileBlocks::from_source(code, "test.py").unwrap();
 
@@ -322,20 +325,22 @@ fn extract_decorated_function() {
 
 #[test]
 fn extract_function_with_multiple_decorators() {
-    let code = &dedent(r#"
+    let code = &dedent(
+        r#"
         @decorator1
         @decorator2
         @decorator3
         def foo():
             pass
-    "#);
+    "#,
+    );
 
     let blocks = FileBlocks::from_source(code, "test.py").unwrap();
 
     let func = blocks.blocks.iter().find(|b| b.id.name == "foo");
     assert!(func.is_some());
 
-    // BUG: Currently rustpython_parser returns def line, not decorator line  
+    // BUG: Currently rustpython_parser returns def line, not decorator line
     let block = func.unwrap();
     assert_eq!(
         block.id.start_line, 1,
@@ -348,12 +353,14 @@ fn extract_function_with_multiple_decorators() {
 fn nested_function_part_of_parent() {
     // Nested functions should be part of the parent function's block,
     // not extracted as separate blocks (design decision)
-    let code = &dedent(r#"
+    let code = &dedent(
+        r#"
         def outer():
             def inner():
                 return 1
             return inner()
-    "#);
+    "#,
+    );
 
     let blocks = FileBlocks::from_source(code, "test.py").unwrap();
 
@@ -375,14 +382,16 @@ fn nested_function_part_of_parent() {
 
 #[test]
 fn extract_class_with_methods() {
-    let code = &dedent(r#"
+    let code = &dedent(
+        r#"
         class Foo:
             def method_one(self):
                 pass
 
             def method_two(self):
                 pass
-    "#);
+    "#,
+    );
 
     let blocks = FileBlocks::from_source(code, "test.py").unwrap();
 
@@ -391,30 +400,26 @@ fn extract_class_with_methods() {
     assert!(class_block.is_some());
     assert_eq!(class_block.unwrap().id.kind, BlockKind::Class);
 
-    let method_one = blocks
-        .blocks
-        .iter()
-        .find(|b| b.id.name == "Foo.method_one");
+    let method_one = blocks.blocks.iter().find(|b| b.id.name == "Foo.method_one");
     assert!(method_one.is_some());
     assert_eq!(method_one.unwrap().id.kind, BlockKind::Method);
 
-    let method_two = blocks
-        .blocks
-        .iter()
-        .find(|b| b.id.name == "Foo.method_two");
+    let method_two = blocks.blocks.iter().find(|b| b.id.name == "Foo.method_two");
     assert!(method_two.is_some());
 }
 
 #[test]
 fn class_variables_before_methods_in_header() {
-    let code = &dedent(r#"
+    let code = &dedent(
+        r#"
         class Foo:
             class_var = 1
             another_var = 2
 
             def method(self):
                 pass
-    "#);
+    "#,
+    );
 
     let blocks = FileBlocks::from_source(code, "test.py").unwrap();
 
@@ -439,13 +444,15 @@ fn class_variables_after_methods_belong_to_some_block() {
     // They belong to NO block currently
     //
     // This test documents the issue.
-    let code = &dedent(r#"
+    let code = &dedent(
+        r#"
         class Foo:
             def method(self):
                 pass
 
             after_var = 1
-    "#);
+    "#,
+    );
 
     let blocks = FileBlocks::from_source(code, "test.py").unwrap();
 
@@ -463,12 +470,14 @@ fn class_variables_after_methods_belong_to_some_block() {
 
 #[test]
 fn extract_property() {
-    let code = &dedent(r#"
+    let code = &dedent(
+        r#"
         class Foo:
             @property
             def value(self):
                 return self._value
-    "#);
+    "#,
+    );
 
     let blocks = FileBlocks::from_source(code, "test.py").unwrap();
 
@@ -479,12 +488,14 @@ fn extract_property() {
 
 #[test]
 fn extract_staticmethod() {
-    let code = &dedent(r#"
+    let code = &dedent(
+        r#"
         class Foo:
             @staticmethod
             def static_method():
                 pass
-    "#);
+    "#,
+    );
 
     let blocks = FileBlocks::from_source(code, "test.py").unwrap();
 
@@ -497,12 +508,14 @@ fn extract_staticmethod() {
 
 #[test]
 fn extract_classmethod() {
-    let code = &dedent(r#"
+    let code = &dedent(
+        r#"
         class Foo:
             @classmethod
             def class_method(cls):
                 pass
-    "#);
+    "#,
+    );
 
     let blocks = FileBlocks::from_source(code, "test.py").unwrap();
 
@@ -519,7 +532,8 @@ fn extract_classmethod() {
 
 #[test]
 fn imports_grouped_into_single_block() {
-    let code = &dedent(r#"
+    let code = &dedent(
+        r#"
         import os
         import sys
         from pathlib import Path
@@ -527,7 +541,8 @@ fn imports_grouped_into_single_block() {
 
         def foo():
             pass
-    "#);
+    "#,
+    );
 
     let blocks = FileBlocks::from_source(code, "test.py").unwrap();
 
@@ -550,13 +565,15 @@ fn scattered_imports_behavior() {
     // the entire range, including intermediate code
     //
     // This test documents the issue.
-    let code = &dedent(r#"
+    let code = &dedent(
+        r#"
         import os
 
         x = 1
 
         import sys
-    "#);
+    "#,
+    );
 
     let blocks = FileBlocks::from_source(code, "test.py").unwrap();
 
@@ -580,7 +597,8 @@ fn scattered_imports_behavior() {
 
 #[test]
 fn conditional_import_not_in_import_block() {
-    let code = &dedent(r#"
+    let code = &dedent(
+        r#"
         import os
 
         if TYPE_CHECKING:
@@ -588,7 +606,8 @@ fn conditional_import_not_in_import_block() {
 
         def foo():
             pass
-    "#);
+    "#,
+    );
 
     let blocks = FileBlocks::from_source(code, "test.py").unwrap();
 
@@ -613,11 +632,13 @@ fn conditional_import_not_in_import_block() {
 
 #[test]
 fn top_level_code_extracted() {
-    let code = &dedent(r#"
+    let code = &dedent(
+        r#"
         x = 1
         y = 2
         print("hello")
-    "#);
+    "#,
+    );
 
     let blocks = FileBlocks::from_source(code, "test.py").unwrap();
 
@@ -632,13 +653,15 @@ fn top_level_code_extracted() {
 
 #[test]
 fn if_name_main_is_top_level() {
-    let code = &dedent(r#"
+    let code = &dedent(
+        r#"
         def foo():
             pass
 
         if __name__ == "__main__":
             foo()
-    "#);
+    "#,
+    );
 
     let blocks = FileBlocks::from_source(code, "test.py").unwrap();
 
@@ -658,13 +681,15 @@ fn if_name_main_is_top_level() {
 
 #[test]
 fn line_to_block_mapping_correct() {
-    let code = &dedent(r#"
+    let code = &dedent(
+        r#"
         def foo():
             pass
 
         def bar():
             pass
-    "#);
+    "#,
+    );
 
     let blocks = FileBlocks::from_source(code, "test.py").unwrap();
 
@@ -712,22 +737,26 @@ fn block_identity_stable_after_adding_blank_line_above() {
     // Currently, BlockId includes start_line which WILL change.
     // This test documents the desired behavior.
 
-    let code_before = &dedent(r#"
+    let code_before = &dedent(
+        r#"
         def helper():
             return 1
 
         def test_foo():
             assert helper() == 1
-    "#);
+    "#,
+    );
 
-    let code_after = &dedent(r#"
+    let code_after = &dedent(
+        r#"
         def helper():
             return 1
 
 
         def test_foo():
             assert helper() == 1
-    "#);
+    "#,
+    );
 
     let blocks_before = FileBlocks::from_source(code_before, "test.py").unwrap();
     let blocks_after = FileBlocks::from_source(code_after, "test.py").unwrap();

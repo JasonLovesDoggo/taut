@@ -50,10 +50,12 @@ impl ProgressPrinter {
         let _ = io::stdout().flush();
 
         // Store failed tests for later
-        if !result.passed && !result.skipped
-            && let Ok(mut failed) = self.failed_tests.lock() {
-                failed.push(result.clone());
-            }
+        if !result.passed
+            && !result.skipped
+            && let Ok(mut failed) = self.failed_tests.lock()
+        {
+            failed.push(result.clone());
+        }
     }
 
     fn print_verbose(&self, result: &TestResult) {
@@ -99,15 +101,17 @@ impl ProgressPrinter {
             duration_str
         );
 
-        if !result.passed && !result.skipped
-            && let Some(ref error) = result.error {
-                println!("    {}", error.message.red());
-                if let Some(ref tb) = error.traceback {
-                    for line in tb.lines().take(10) {
-                        println!("    {}", line.dimmed());
-                    }
+        if !result.passed
+            && !result.skipped
+            && let Some(ref error) = result.error
+        {
+            println!("    {}", error.message.red());
+            if let Some(ref tb) = error.traceback {
+                for line in tb.lines().take(10) {
+                    println!("    {}", line.dimmed());
                 }
             }
+        }
 
         let _ = io::stdout().flush();
     }

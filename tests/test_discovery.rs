@@ -84,18 +84,9 @@ fn ignore_non_test_files() -> Result<()> {
     let tmp = TempDir::new()?;
 
     // These should be ignored
-    write_file(
-        &tmp.path().join("helper.py"),
-        "def helper(): pass\n",
-    )?;
-    write_file(
-        &tmp.path().join("conftest.py"),
-        "# pytest config\n",
-    )?;
-    write_file(
-        &tmp.path().join("utils.py"),
-        "def util(): pass\n",
-    )?;
+    write_file(&tmp.path().join("helper.py"), "def helper(): pass\n")?;
+    write_file(&tmp.path().join("conftest.py"), "# pytest config\n")?;
+    write_file(&tmp.path().join("utils.py"), "def util(): pass\n")?;
     // This one has "test" but not in the right pattern
     write_file(
         &tmp.path().join("my_test_helper.py"),
@@ -111,7 +102,13 @@ fn ignore_non_test_files() -> Result<()> {
     let files = taut::discovery::find_test_files(&[tmp.path().to_path_buf()])?;
 
     assert_eq!(files.len(), 1);
-    assert!(files[0].file_name().unwrap().to_string_lossy().contains("test_real.py"));
+    assert!(
+        files[0]
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .contains("test_real.py")
+    );
 
     Ok(())
 }
@@ -143,10 +140,7 @@ fn ignore_non_python_files() -> Result<()> {
 fn discover_files_recursively() -> Result<()> {
     let tmp = TempDir::new()?;
 
-    write_file(
-        &tmp.path().join("test_root.py"),
-        "def test_ok(): pass\n",
-    )?;
+    write_file(&tmp.path().join("test_root.py"), "def test_ok(): pass\n")?;
     write_file(
         &tmp.path().join("subdir/test_nested.py"),
         "def test_ok(): pass\n",
@@ -171,10 +165,7 @@ fn discover_single_file_path() -> Result<()> {
     write_file(&target, "def test_ok(): pass\n")?;
 
     // Also create another file that should NOT be found
-    write_file(
-        &tmp.path().join("test_other.py"),
-        "def test_ok(): pass\n",
-    )?;
+    write_file(&tmp.path().join("test_other.py"), "def test_ok(): pass\n")?;
 
     // Pass single file path instead of directory
     let files = taut::discovery::find_test_files(&[target.clone()])?;
@@ -196,7 +187,8 @@ fn extract_test_prefix_functions() -> Result<()> {
 
     write_file(
         &file,
-        &dedent(r#"
+        &dedent(
+            r#"
             def test_one():
                 assert True
 
@@ -208,7 +200,8 @@ fn extract_test_prefix_functions() -> Result<()> {
 
             def another_helper():
                 pass
-        "#),
+        "#,
+        ),
     )?;
 
     let items = taut::discovery::extract_tests_from_file(&file)?;
@@ -226,7 +219,8 @@ fn extract_underscore_test_prefix_functions() -> Result<()> {
 
     write_file(
         &file,
-        &dedent(r#"
+        &dedent(
+            r#"
             def _test_private():
                 assert True
 
@@ -235,7 +229,8 @@ fn extract_underscore_test_prefix_functions() -> Result<()> {
 
             def test_public():
                 assert True
-        "#),
+        "#,
+        ),
     )?;
 
     let items = taut::discovery::extract_tests_from_file(&file)?;
@@ -256,7 +251,8 @@ fn extract_async_test_functions() -> Result<()> {
 
     write_file(
         &file,
-        &dedent(r#"
+        &dedent(
+            r#"
             async def test_async_one():
                 await something()
 
@@ -268,7 +264,8 @@ fn extract_async_test_functions() -> Result<()> {
 
             async def helper_async():
                 pass
-        "#),
+        "#,
+        ),
     )?;
 
     let items = taut::discovery::extract_tests_from_file(&file)?;
@@ -296,7 +293,8 @@ fn extract_methods_from_test_classes() -> Result<()> {
 
     write_file(
         &file,
-        &dedent(r#"
+        &dedent(
+            r#"
             class TestMath:
                 def test_add(self):
                     assert 1 + 1 == 2
@@ -306,7 +304,8 @@ fn extract_methods_from_test_classes() -> Result<()> {
 
                 def helper(self):
                     pass
-        "#),
+        "#,
+        ),
     )?;
 
     let items = taut::discovery::extract_tests_from_file(&file)?;
@@ -329,7 +328,8 @@ fn ignore_non_test_classes() -> Result<()> {
 
     write_file(
         &file,
-        &dedent(r#"
+        &dedent(
+            r#"
             class TestValid:
                 def test_method(self):
                     pass
@@ -345,7 +345,8 @@ fn ignore_non_test_classes() -> Result<()> {
             class Testlowercase:
                 def test_method(self):
                     pass
-        "#),
+        "#,
+        ),
     )?;
 
     let items = taut::discovery::extract_tests_from_file(&file)?;
@@ -379,7 +380,8 @@ fn extract_underscore_test_methods() -> Result<()> {
 
     write_file(
         &file,
-        &dedent(r#"
+        &dedent(
+            r#"
             class TestExample:
                 def test_public(self):
                     pass
@@ -389,7 +391,8 @@ fn extract_underscore_test_methods() -> Result<()> {
 
                 def helper(self):
                     pass
-        "#),
+        "#,
+        ),
     )?;
 
     let items = taut::discovery::extract_tests_from_file(&file)?;
@@ -435,7 +438,8 @@ fn extract_correct_line_numbers_with_decorators() -> Result<()> {
 
     write_file(
         &file,
-        &dedent(r#"
+        &dedent(
+            r#"
             @decorator
             def test_decorated():
                 pass
@@ -444,7 +448,8 @@ fn extract_correct_line_numbers_with_decorators() -> Result<()> {
             @decorator2
             def test_multi_decorated():
                 pass
-        "#),
+        "#,
+        ),
     )?;
 
     let items = taut::discovery::extract_tests_from_file(&file)?;
@@ -486,7 +491,8 @@ fn filter_by_function_name() -> Result<()> {
 
     write_file(
         &file,
-        &dedent(r#"
+        &dedent(
+            r#"
             def test_alpha():
                 pass
 
@@ -495,7 +501,8 @@ fn filter_by_function_name() -> Result<()> {
 
             def test_alpha_extended():
                 pass
-        "#),
+        "#,
+        ),
     )?;
 
     let files = vec![file];
@@ -516,7 +523,8 @@ fn filter_case_insensitive() -> Result<()> {
 
     write_file(
         &file,
-        &dedent(r#"
+        &dedent(
+            r#"
             def test_Alpha():
                 pass
 
@@ -528,7 +536,8 @@ fn filter_case_insensitive() -> Result<()> {
 
             def test_beta():
                 pass
-        "#),
+        "#,
+        ),
     )?;
 
     let files = vec![file];
@@ -546,7 +555,8 @@ fn filter_by_class_name() -> Result<()> {
 
     write_file(
         &file,
-        &dedent(r#"
+        &dedent(
+            r#"
             class TestAlpha:
                 def test_one(self):
                     pass
@@ -554,7 +564,8 @@ fn filter_by_class_name() -> Result<()> {
             class TestBeta:
                 def test_one(self):
                     pass
-        "#),
+        "#,
+        ),
     )?;
 
     let files = vec![file];
@@ -575,10 +586,7 @@ fn handle_syntax_error_gracefully() -> Result<()> {
     let tmp = TempDir::new()?;
     let file = tmp.path().join("test_syntax_error.py");
 
-    write_file(
-        &file,
-        "def test_broken(\n    # missing closing paren\n",
-    )?;
+    write_file(&file, "def test_broken(\n    # missing closing paren\n")?;
 
     // Should return an error, not panic
     let result = taut::discovery::extract_tests_from_file(&file);
@@ -605,10 +613,7 @@ fn handle_file_with_only_comments() -> Result<()> {
     let tmp = TempDir::new()?;
     let file = tmp.path().join("test_comments.py");
 
-    write_file(
-        &file,
-        "# This is a comment\n# Another comment\n",
-    )?;
+    write_file(&file, "# This is a comment\n# Another comment\n")?;
 
     let items = taut::discovery::extract_tests_from_file(&file)?;
     assert!(items.is_empty());
@@ -621,10 +626,7 @@ fn handle_file_with_only_docstring() -> Result<()> {
     let tmp = TempDir::new()?;
     let file = tmp.path().join("test_docstring.py");
 
-    write_file(
-        &file,
-        "\"\"\"This module has only a docstring.\"\"\"\n",
-    )?;
+    write_file(&file, "\"\"\"This module has only a docstring.\"\"\"\n")?;
 
     let items = taut::discovery::extract_tests_from_file(&file)?;
     assert!(items.is_empty());
@@ -643,7 +645,8 @@ fn handle_nested_classes() -> Result<()> {
 
     write_file(
         &file,
-        &dedent(r#"
+        &dedent(
+            r#"
             class TestOuter:
                 def test_outer(self):
                     pass
@@ -651,7 +654,8 @@ fn handle_nested_classes() -> Result<()> {
                 class TestInner:
                     def test_inner(self):
                         pass
-        "#),
+        "#,
+        ),
     )?;
 
     let items = taut::discovery::extract_tests_from_file(&file)?;
@@ -674,7 +678,8 @@ fn handle_function_with_complex_signature() -> Result<()> {
 
     write_file(
         &file,
-        &dedent(r#"
+        &dedent(
+            r#"
             def test_with_args(
                 arg1,
                 arg2,
@@ -695,7 +700,8 @@ fn handle_function_with_complex_signature() -> Result<()> {
                 y: str
             ) -> bool:
                 pass
-        "#),
+        "#,
+        ),
     )?;
 
     let items = taut::discovery::extract_tests_from_file(&file)?;
@@ -713,10 +719,7 @@ fn handle_multiple_test_files() -> Result<()> {
         &tmp.path().join("test_a.py"),
         "def test_a1(): pass\ndef test_a2(): pass\n",
     )?;
-    write_file(
-        &tmp.path().join("test_b.py"),
-        "def test_b1(): pass\n",
-    )?;
+    write_file(&tmp.path().join("test_b.py"), "def test_b1(): pass\n")?;
 
     let files = taut::discovery::find_test_files(&[tmp.path().to_path_buf()])?;
     let items = taut::discovery::extract_tests(&files, None)?;

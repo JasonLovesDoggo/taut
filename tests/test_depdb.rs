@@ -120,13 +120,15 @@ fn unchanged_passing_test_skips() -> Result<()> {
 fn changed_dependency_reruns() -> Result<()> {
     let tmp = TempDir::new()?;
     let test_file = tmp.path().join("test_foo.py");
-    let code_v1 = &dedent(r#"
+    let code_v1 = &dedent(
+        r#"
         def helper():
             return 1
 
         def test_uses_helper():
             assert helper() == 1
-    "#);
+    "#,
+    );
     fs::write(&test_file, code_v1)?;
 
     let mut depdb = DependencyDatabase::default();
@@ -151,13 +153,15 @@ fn changed_dependency_reruns() -> Result<()> {
     depdb.record_test_coverage(&test, &coverage, true, &block_index);
 
     // Now change the helper function
-    let code_v2 = &dedent(r#"
+    let code_v2 = &dedent(
+        r#"
         def helper():
             return 2
 
         def test_uses_helper():
             assert helper() == 1
-    "#);
+    "#,
+    );
     fs::write(&test_file, code_v2)?;
 
     // Re-parse with new content
@@ -192,13 +196,15 @@ fn adding_blank_line_should_not_invalidate_cache() -> Result<()> {
     let test_file = tmp.path().join("test_foo.py");
 
     // Version 1: no blank line
-    let code_v1 = &dedent(r#"
+    let code_v1 = &dedent(
+        r#"
         def helper():
             return 1
 
         def test_foo():
             assert helper() == 1
-    "#);
+    "#,
+    );
     fs::write(&test_file, code_v1)?;
 
     let mut depdb = DependencyDatabase::default();
@@ -227,14 +233,16 @@ fn adding_blank_line_should_not_invalidate_cache() -> Result<()> {
     );
 
     // Version 2: add blank line above helper (NO CODE CHANGE)
-    let code_v2 = &dedent(r#"
+    let code_v2 = &dedent(
+        r#"
 
         def helper():
             return 1
 
         def test_foo():
             assert helper() == 1
-    "#);
+    "#,
+    );
     fs::write(&test_file, code_v2)?;
 
     let file_blocks_v2 = FileBlocks::from_file(&test_file)?;
@@ -323,7 +331,8 @@ fn reordering_functions_with_same_content_should_not_invalidate() -> Result<()> 
     let tmp = TempDir::new()?;
     let test_file = tmp.path().join("test_foo.py");
 
-    let code_v1 = &dedent(r#"
+    let code_v1 = &dedent(
+        r#"
         def helper_a():
             return 1
 
@@ -332,7 +341,8 @@ fn reordering_functions_with_same_content_should_not_invalidate() -> Result<()> 
 
         def test_uses_a():
             assert helper_a() == 1
-    "#);
+    "#,
+    );
     fs::write(&test_file, code_v1)?;
 
     let mut depdb = DependencyDatabase::default();
@@ -355,7 +365,8 @@ fn reordering_functions_with_same_content_should_not_invalidate() -> Result<()> 
     depdb.record_test_coverage(&test, &coverage, true, &block_index);
 
     // Reorder: swap helper_a and helper_b
-    let code_v2 = &dedent(r#"
+    let code_v2 = &dedent(
+        r#"
         def helper_b():
             return 2
 
@@ -364,7 +375,8 @@ fn reordering_functions_with_same_content_should_not_invalidate() -> Result<()> 
 
         def test_uses_a():
             assert helper_a() == 1
-    "#);
+    "#,
+    );
     fs::write(&test_file, code_v2)?;
 
     let file_blocks_v2 = FileBlocks::from_file(&test_file)?;
@@ -506,7 +518,8 @@ fn same_method_name_different_classes() -> Result<()> {
     let tmp = TempDir::new()?;
     let test_file = tmp.path().join("test_classes.py");
 
-    let code = &dedent(r#"
+    let code = &dedent(
+        r#"
         class TestAlpha:
             def test_common(self):
                 pass
@@ -514,7 +527,8 @@ fn same_method_name_different_classes() -> Result<()> {
         class TestBeta:
             def test_common(self):
                 pass
-    "#);
+    "#,
+    );
     fs::write(&test_file, code)?;
 
     let mut depdb = DependencyDatabase::default();
