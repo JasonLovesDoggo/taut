@@ -1,0 +1,145 @@
+/* Catppuccin Orange Theme - Simple Colors Only */
+
+/* Light mode - Catppuccin Latte */
+[data-md-color-scheme="default"] {
+  --md-primary-fg-color: #fe640b;
+  --md-accent-fg-color: #df8e1d;
+  --md-default-bg-color: #eff1f5;
+  --md-default-fg-color: #4c4f69;
+  --md-code-bg-color: #e6e9ef;
+  --md-code-fg-color: #4c4f69;
+  --md-typeset-a-color: #fe640b;
+  --md-footer-bg-color: #dce0e8;
+  --md-footer-fg-color: #4c4f69;
+}
+
+/* Dark mode - Catppuccin Macchiato */
+[data-md-color-scheme="slate"] {
+  --md-primary-fg-color: #f5a97f;
+  --md-accent-fg-color: #eed49f;
+  --md-default-bg-color: #24273a;
+  --md-default-fg-color: #cad3f5;
+  --md-code-bg-color: #1e2030;
+  --md-code-fg-color: #cad3f5;
+  --md-typeset-a-color: #f5a97f;
+  --md-footer-bg-color: #181926;
+  --md-footer-fg-color: #cad3f5;
+}
+
+/* Typography improvements */
+.md-typeset h1,
+.md-typeset h2,
+.md-typeset h3,
+.md-typeset h4,
+.md-typeset h5,
+.md-typeset h6 {
+  font-weight: 600;
+  margin-top: 1.5em;
+}
+
+.md-typeset h1 {
+  border-bottom: 2px solid var(--md-primary-fg-color);
+  padding-bottom: 0.3em;
+  margin-bottom: 1em;
+}
+
+/* Link improvements */
+.md-typeset a {
+  transition: color 0.2s ease;
+}
+
+.md-typeset a:hover {
+  text-decoration: underline;
+}
+
+/* Code block styling */
+.md-typeset pre {
+  border-radius: 8px;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.md-typeset code {
+  border-radius: 4px;
+  font-size: 0.9em;
+  font-weight: 500;
+}
+
+/* Table styling */
+.md-typeset table {
+  border-radius: 8px;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+}
+
+.md-typeset table:not([class]) th {
+  font-weight: 600;
+}
+
+.md-typeset table:not([class]) tr:hover {
+  background-color: rgba(254, 100, 11, 0.05);
+}
+
+/* Admonitions */
+.md-typeset .admonition {
+  border-radius: 8px;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+}
+
+.md-typeset .admonition-title {
+  font-weight: 600;
+}
+
+/* Button styling */
+.md-button {
+  border-radius: 8px;
+  font-weight: 500;
+  transition: all 0.2s ease;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.md-button:hover {
+  box-shadow: 0 4px 8px rgba(0,0,0,0.15);
+  transform: translateY(-1px);
+}
+
+.md-button--primary {
+  font-weight: 600;
+}
+
+/* Search styling */
+.md-search__form {
+  border-radius: 8px;
+  transition: box-shadow 0.2s ease;
+}
+
+.md-search__form:focus-within {
+  box-shadow: 0 0 0 3px rgba(254, 100, 11, 0.2);
+}
+
+/* Navigation improvements */
+.md-nav__link--active {
+  font-weight: 600;
+}
+
+/* Header improvements */
+.md-header__title {
+  font-weight: 600;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--md-default-bg-color);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--md-primary-fg-color);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--md-accent-fg-color);
+}
