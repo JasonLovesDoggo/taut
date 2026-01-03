@@ -5,6 +5,7 @@ edition = "2024"
 description = "Tests, without the overhead."
 license = "MIT"
 readme = "README.md"
+build = "build.rs"
 
 [lib]
 name = "taut"
