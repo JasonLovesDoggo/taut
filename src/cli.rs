@@ -33,7 +33,7 @@ pub struct Options {
     /// Case-insensitive name substring/glob (* and ?); no boolean expressions
     #[arg(short = 'k', long, global = true, help_heading = "Selection")]
     pub filter: Option<String>,
-    /// Print individual test names and timings
+    /// Print individual test names, timings, and full tracebacks
     #[arg(short, long, global = true, help_heading = "Output", conflicts_with_all = ["quiet", "json"])]
     pub verbose: bool,
     /// Print only failures and the final summary
@@ -71,7 +71,7 @@ pub struct Options {
     /// Worker lifetime [default: process-per-run]
     #[arg(long, global = true, help_heading = "Execution", value_enum)]
     pub isolation: Option<Isolation>,
-    /// Python executable or path [default: active virtual environment, .venv, python3]
+    /// Python executable or path (use `taut doctor` to inspect selection)
     #[arg(
         long,
         global = true,

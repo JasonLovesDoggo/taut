@@ -78,11 +78,11 @@ uv run taut doctor tests/unit
 
 `watch` runs immediately and reruns after Python or project configuration changes. Stop it with Ctrl+C. `-x` stops scheduling after a failure; tests already running may finish. `--timeout` is per test, in seconds, and hard termination cannot run Python cleanup.
 
-Failure reports show a source location and a command for the selected test. Run that command through the same `uv run` or trial prefix so it keeps your environment. Use `-v` for the full traceback. A collection syntax error points to the file and line to fix. [Environment and configuration troubleshooting](../guide/configuration.md#troubleshoot-a-first-run).
+Failure reports show the failing test and a command to rerun it. Run that command through the same `uv run` or trial prefix so it keeps your environment. The command uses `--no-config` and preserves effective execution settings so a nested configuration cannot change the rerun. Insert `-v` before `--` for the full traceback. A collection syntax error points to the file and line to fix. [Environment and configuration troubleshooting](../guide/configuration.md#troubleshoot-a-first-run).
 
 ## Try it in CI
 
-Add a separate trial job while keeping your current test job. This example assumes a checked-in, current `uv.lock` and uses the immutable preview commit `f45ca90ae1e4ae8e7b3bbc25af5b148c60b553fe`, which includes the test execution and collection features above. It predates `doctor` and the newer failure-report formatting. Replace the pin only after reviewing a newer commit; there is no published release with this feature set yet.
+Add a separate trial job while keeping your current test job. This example assumes a checked-in, current `uv.lock` and uses the immutable preview commit `817a08d8776a46dfff880980984f0665c5f56dda`, including environment diagnostics and exact failure reruns. Replace the pin only after reviewing a newer commit; there is no published release with this feature set yet.
 
 ```yaml
 name: Taut trial
@@ -100,7 +100,7 @@ jobs:
       - name: Run the trial directory
         run: >-
           uv run --locked
-          --with "taut @ git+https://github.com/JasonLovesDoggo/taut@f45ca90ae1e4ae8e7b3bbc25af5b148c60b553fe"
+          --with "taut @ git+https://github.com/JasonLovesDoggo/taut@817a08d8776a46dfff880980984f0665c5f56dda"
           taut tests/unit --json > taut-results.json
       - uses: actions/upload-artifact@v4
         if: always()

@@ -20,7 +20,11 @@ fail-fast = false
 | `fail-fast` | `false` | Stop scheduling after the first failure |
 | `python` | Automatically selected | Interpreter executable or path |
 
-The aliases `max_workers`, `async_concurrency`, and `fail_fast` are also accepted. Unknown settings, invalid TOML, zero worker counts, and invalid timeouts are errors. Taut locates configuration from the first selected path and stops at its nearest `pyproject.toml`, even when that file has no `[tool.taut]` table.
+The aliases `max_workers`, `async_concurrency`, and `fail_fast` are also accepted. Unknown settings, invalid TOML, zero worker counts, and invalid timeouts are errors.
+
+Taut finds the first selected path's nearest project boundary: a directory containing `pyproject.toml`, `pytest.ini`, `setup.cfg`, `setup.py`, `.git`, or a `.venv` directory. It reads `[tool.taut]` from that boundary's `pyproject.toml`, without inheriting settings from an outer project. When you select multiple paths, the first path determines the interpreter and execution settings for the entire run.
+
+Use `--no-config` to ignore project settings, including malformed TOML, while keeping project discovery and explicit command-line options. `taut doctor --no-config` explains the resulting environment without importing your tests.
 
 CLI values override corresponding configured values:
 
@@ -69,7 +73,7 @@ Use `uv run` for a uv project so the project and its dependencies are available.
 | No tests collected | Use `taut list` on the directory, then on an explicit file. Directory discovery recognizes `test_*.py`, `_test*.py`, and `*_test.py`; functions/methods start with `test_` or `_test`. |
 | Collection reports a syntax error | Fix the reported file and line. `list` reads Python syntax even though it does not execute it. |
 | Unknown fixture, marker, or parameter case | Check the [pytest migration table](../getting-started/quickstart.md#bring-an-existing-pytest-suite); pytest plugins are not loaded. |
-| A failure needs more context | Copy the rerun command, keep your environment prefix, and add `-v` for the full traceback. |
+| A failure needs more context | Copy the rerun command, keep your environment prefix, and insert `-v` before `--` for the full traceback. |
 
 Quote node IDs containing brackets, such as `'tests/test_numbers.py::test_parse[negative]'`. `-k` accepts case-insensitive substrings and globs, not pytest boolean expressions. Run `taut --help` for grouped options and `taut <command> --help` for command-specific syntax.
 
@@ -81,7 +85,7 @@ taut watch tests
 
 Watch runs once immediately, then reruns the same selection when Python files or `pyproject.toml`, `pytest.ini`, `setup.cfg`, or `setup.py` change. It keeps watching after a collection error so you can fix the file and retry. Run flags such as `-k`, `--timeout`, and `--changed` also apply in watch mode.
 
-Watch and changed-test tracking find the nearest project boundary marked by one of those configuration files or `.git`. This includes application sources above a selected `tests` directory. Generated and environment directories are ignored. Taut's own settings still come from `[tool.taut]` in `pyproject.toml`.
+Watch and changed-test tracking use the same project boundary, including `.git` and `.venv`. This includes application sources above a selected `tests` directory. Generated and environment directories are ignored. Taut's own settings still come from `[tool.taut]` in `pyproject.toml`.
 
 ## Changed runs
 
