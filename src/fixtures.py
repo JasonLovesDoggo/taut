@@ -285,15 +285,15 @@ class FixtureRegistry:
             self._signatures[key] = tuple(names)
             return self._signatures[key]
 
-    def needs_context(self, function):
-        return bool(self.autouse or self.dependencies(function))
+    def needs_context(self, function, provided=()):
+        return bool(self.autouse or any(name not in provided for name in self.dependencies(function)))
 
-    def requires_serial(self, function):
+    def requires_serial(self, function, provided=()):
         """Whether this test's known dependency graph mutates global state."""
         visited = set()
 
         def visit(name):
-            if name in visited:
+            if name in provided or name in visited:
                 return False
             visited.add(name)
             definition = self.definitions.get(name)
@@ -312,10 +312,12 @@ class FixtureContext:
     outside an active loop while keeping async setup and cleanup on one loop.
     """
 
-    def __init__(self, registry, *, concurrent=False):
+    def __init__(self, registry, *, concurrent=False, provided=None, run_async=None):
         self.registry = registry
         self.concurrent = concurrent
-        self._values = {}
+        self.provided = dict(provided or {})
+        self._values = dict(self.provided)
+        self._run_async = run_async
         self._resolving = []
         self._finalizers = []
         self._closed = False
@@ -333,11 +335,91 @@ class FixtureContext:
         return False
 
     async def kwargs(self, function):
-        if self.concurrent and self.registry.requires_serial(function):
+        if self.concurrent and self.registry.requires_serial(function, self.provided):
             raise FixtureError("monkeypatch changes process-global state; run this test in a serial worker slot")
         for name in self.registry.autouse:
             await self.resolve(name)
-        return {name: await self.resolve(name) for name in self.registry.dependencies(function)}
+        result = {name: await self.resolve(name) for name in self.registry.dependencies(function)}
+        result.update(self.provided)
+        return result
+
+    def _await(self, value):
+        if self._run_async is None:
+            if inspect.iscoroutine(value):
+                value.close()
+            raise FixtureError("async fixture requires an event-loop adapter")
+        return self._run_async(value)
+
+    def kwargs_sync(self, function):
+        if self.concurrent and self.registry.requires_serial(function, self.provided):
+            raise FixtureError("monkeypatch changes process-global state; run this test in a serial worker slot")
+        for name in self.registry.autouse:
+            self.resolve_sync(name)
+        result = {name: self.resolve_sync(name) for name in self.registry.dependencies(function)}
+        result.update(self.provided)
+        return result
+
+    def resolve_sync(self, name):
+        if self._closed:
+            raise FixtureError("fixture context is already closed")
+        if name in self._values:
+            return self._values[name]
+        if name in self._resolving:
+            raise FixtureError("fixture dependency cycle: " + " -> ".join((*self._resolving, name)))
+        definition = self.registry.definitions.get(name)
+        if definition is None:
+            available = ", ".join(sorted(self.registry.definitions))
+            raise FixtureError(f"fixture {name!r} not found; available: {available}")
+        if self.concurrent and definition.serial:
+            raise FixtureError(f"fixture {name!r} changes process-global state; run this test in a serial worker slot")
+        self._resolving.append(name)
+        try:
+            kwargs = {dep: self.resolve_sync(dep) for dep in self.registry.dependencies(definition.function)}
+            value = definition.function(**kwargs)
+            if inspect.isawaitable(value):
+                value = self._await(value)
+            if inspect.isasyncgen(value):
+                generator = value
+                try:
+                    value = self._await(anext(generator))
+                except StopAsyncIteration:
+                    raise FixtureError(f"fixture {name!r} did not yield a value") from None
+                self._finalizers.append((name, generator, True))
+            elif inspect.isgenerator(value):
+                generator = value
+                try:
+                    value = next(generator)
+                except StopIteration:
+                    raise FixtureError(f"fixture {name!r} did not yield a value") from None
+                self._finalizers.append((name, generator, False))
+            self._values[name] = value
+            return value
+        finally:
+            self._resolving.pop()
+
+    def close_sync(self):
+        if self._closed:
+            return
+        self._closed = True
+        errors = []
+        while self._finalizers:
+            name, generator, asynchronous = self._finalizers.pop()
+            try:
+                try:
+                    self._await(anext(generator)) if asynchronous else next(generator)
+                except (StopIteration, StopAsyncIteration):
+                    pass
+                else:
+                    raise FixtureError(f"fixture {name!r} yielded more than once")
+            except BaseException as error:
+                errors.append(error)
+            finally:
+                try:
+                    self._await(generator.aclose()) if asynchronous else generator.close()
+                except BaseException as error:
+                    errors.append(error)
+        self._values.clear()
+        _raise_errors("fixture teardown failed", errors)
 
     async def resolve(self, name):
         if self._closed:

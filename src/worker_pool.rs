@@ -4,7 +4,7 @@
 use crate::discovery::TestItem;
 use crate::markers::MarkerValue;
 use crate::runner::{
-    IsolationMode, RunOptions, TestCoverage, TestError, TestResult, failed_result, skipped_result,
+    IsolationMode, RunOptions, TestCoverage, TestError, TestResult, failed_result,
 };
 use anyhow::{Context, Result};
 use crossbeam_channel::{Receiver, Sender, unbounded};
@@ -55,16 +55,16 @@ pub fn resolve_python(explicit: Option<&Path>) -> PathBuf {
             return path;
         }
     }
-    if let Ok(executable) = std::env::current_exe() {
-        if let Some(directory) = executable.parent() {
-            let path = directory.join(if cfg!(windows) {
-                "python.exe"
-            } else {
-                "python"
-            });
-            if path.is_file() {
-                return path;
-            }
+    if let Ok(executable) = std::env::current_exe()
+        && let Some(directory) = executable.parent()
+    {
+        let path = directory.join(if cfg!(windows) {
+            "python.exe"
+        } else {
+            "python"
+        });
+        if path.is_file() {
+            return path;
         }
     }
     if let Ok(cwd) = std::env::current_dir() {
@@ -88,8 +88,12 @@ struct Worker {
 
 impl Worker {
     fn spawn(python: &PathBuf) -> Result<Self> {
+        let bootstrap = format!(
+            "import sys; exec(compile(sys.stdin.buffer.read({}), '<taut worker>', 'exec'))",
+            WORKER_SCRIPT.len()
+        );
         let mut child = Command::new(python)
-            .args(["-u", "-c", WORKER_SCRIPT])
+            .args(["-u", "-c", &bootstrap])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
@@ -126,10 +130,18 @@ impl Worker {
             reader: Some(reader),
             healthy: false,
         };
+        worker
+            .stdin
+            .write_all(WORKER_SCRIPT.as_bytes())
+            .context("Could not send Python worker source")?;
+        worker.stdin.flush()?;
         let ready = worker
             .responses
             .recv_timeout(Duration::from_secs(30))
             .context("Python worker did not start within 30 seconds")??;
+        if let Some(error) = ready.get("startup_error").and_then(|value| value.as_str()) {
+            anyhow::bail!(error.to_owned());
+        }
         anyhow::ensure!(
             ready.get("ready").and_then(|v| v.as_bool()) == Some(true),
             "Invalid worker greeting"
@@ -146,7 +158,7 @@ impl Worker {
     ) -> Result<bool> {
         let tests: Vec<_> = batch.iter().map(|(idx, item)| serde_json::json!({
             "id": idx, "file": item.file.canonicalize().unwrap_or_else(|_| item.file.clone()),
-            "function": item.function, "class": item.class,
+            "function": item.function, "class": item.class, "parameters": item.parameters(),
         })).collect();
         let data = serde_json::to_vec(&serde_json::json!({
             "tests": tests, "collect_coverage": options.collect_coverage,
@@ -393,16 +405,7 @@ fn worker_thread(
             state.serial_active = serial;
             ((start..state.next).collect::<Vec<_>>(), serial)
         };
-        let mut pending = Vec::new();
-        for idx in batch {
-            if items[idx].is_skipped() {
-                let result =
-                    skipped_result(&items[idx], &items[idx].skip_reason().unwrap_or_default());
-                let _ = tx.send((idx, result));
-            } else {
-                pending.push((idx, &items[idx]));
-            }
-        }
+        let mut pending: Vec<_> = batch.into_iter().map(|idx| (idx, &items[idx])).collect();
         while !pending.is_empty() {
             let start = Instant::now();
             let mut done = Vec::new();
@@ -418,19 +421,17 @@ fn worker_thread(
                     }
                 }
             }
-            let execution = (|| -> Result<bool> {
-                worker
-                    .as_mut()
-                    .unwrap()
-                    .run_batch(&pending, options, |idx, result| {
-                        done.push(idx);
-                        if options.fail_fast && !result.passed && !result.skipped {
-                            queue.state.lock().unwrap().stopped = true;
-                            queue.changed.notify_all();
-                        }
-                        let _ = tx.send((idx, result));
-                    })
-            })();
+            let execution = worker
+                .as_mut()
+                .unwrap()
+                .run_batch(&pending, options, |idx, result| {
+                    done.push(idx);
+                    if options.fail_fast && !result.passed && !result.skipped {
+                        queue.state.lock().unwrap().stopped = true;
+                        queue.changed.notify_all();
+                    }
+                    let _ = tx.send((idx, result));
+                });
             pending.retain(|(idx, _)| !done.contains(idx));
             match execution {
                 Ok(restart) => {

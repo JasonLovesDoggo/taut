@@ -1,6 +1,7 @@
 """Dependency-free Python execution worker. Test code never writes to the protocol fd."""
 import contextvars
 import importlib.util
+import importlib.machinery
 import io
 import json
 import os
@@ -38,6 +39,31 @@ _asyncio = None
 _single_owner = None
 _running_cases = set()
 _dirty = False
+_fixture_runtime = None
+_registries = {}
+_fixture_directories = {}
+_signature_names = {}
+_INITIAL_CWD = os.getcwd()
+_UNSET = object()
+
+
+_original_get_code = importlib.machinery.SourceFileLoader.get_code
+_library_roots = tuple(os.path.normcase(os.path.abspath(path)) + os.sep for path in (
+    os.path.dirname(os.__file__), *(entry for entry in sys.path if entry.endswith(("site-packages", "dist-packages")))
+))
+
+
+def _current_source_code(loader, fullname):
+    filename = loader.path
+    normalized = os.path.normcase(os.path.abspath(filename))
+    if not normalized.startswith(_library_roots):
+        return loader.source_to_code(loader.get_data(filename), filename)
+    return _original_get_code(loader, fullname)
+
+
+# Project source can change twice within a filesystem timestamp second. Loading
+# its existing timestamp pyc would silently miss edits during watch or reruns.
+importlib.machinery.SourceFileLoader.get_code = _current_source_code
 
 
 class Capture(io.StringIO):
@@ -121,7 +147,8 @@ _original_thread_error = threading.excepthook
 
 def _thread_start(thread, *args, **kwargs):
     owner = _owner.get() or _single_owner
-    if owner is not None:
+    target = getattr(thread, "_target", None)
+    if owner is not None and getattr(target, "__module__", "") != "concurrent.futures.thread":
         thread._taut_owner = weakref.ref(owner)
     return _original_thread_start(thread, *args, **kwargs)
 
@@ -196,6 +223,103 @@ def _load_module(filename):
     return module
 
 
+def _required_names(function):
+    underlying = getattr(function, "__func__", function)
+    seen = set()
+    while hasattr(underlying, "__wrapped__") and id(underlying) not in seen:
+        seen.add(id(underlying))
+        underlying = underlying.__wrapped__
+    key = (underlying, getattr(function, "__self__", None) is not None)
+    if key not in _signature_names:
+        code = getattr(underlying, "__code__", None)
+        if code is None:
+            return None
+        start = int(key[1])
+        stop = code.co_argcount - len(getattr(underlying, "__defaults__", None) or ())
+        names = list(code.co_varnames[start:stop])
+        defaults = getattr(underlying, "__kwdefaults__", None) or {}
+        names.extend(name for name in code.co_varnames[code.co_argcount:code.co_argcount + code.co_kwonlyargcount] if name not in defaults)
+        _signature_names[key] = tuple(names)
+    return _signature_names[key]
+
+
+def _fixture_boundary(filename):
+    directory = os.path.dirname(filename)
+    if directory not in _fixture_directories:
+        parents = []
+        parent = directory
+        while True:
+            parents.append(parent)
+            if any(os.path.exists(os.path.join(parent, marker)) for marker in ("pyproject.toml", "pytest.ini", "setup.cfg", "setup.py", ".git")) or parent == _INITIAL_CWD:
+                break
+            next_parent = os.path.dirname(parent)
+            if next_parent == parent:
+                parents = [directory]
+                break
+            parent = next_parent
+        _fixture_directories[directory] = (parents[-1], any(os.path.isfile(os.path.join(parent, "conftest.py")) for parent in parents))
+    return _fixture_directories[directory]
+
+
+def _fixtures():
+    global _fixture_runtime
+    if _fixture_runtime is None:
+        module = types.ModuleType("_taut_fixtures")
+        exec(compile(bytes.fromhex(_FIXTURES_SOURCE_HEX).decode("utf-8"), "<taut fixtures>", "exec"), module.__dict__)
+        _fixture_runtime = module
+    return _fixture_runtime
+
+
+def _registry_for(module, filename, function, provided):
+    registry = _registries.get(filename, _UNSET)
+    names = _required_names(function)
+    needs_arguments = names is None or any(name not in provided for name in names)
+    if registry is _UNSET:
+        root, conftest = _fixture_boundary(filename)
+        local = any(getattr(value, "__taut_fixture__", None) is not None or getattr(value, "_fixture_function_marker", None) is not None or getattr(value, "_pytestfixturefunction", None) is not None for value in vars(module).values())
+        registry = _fixtures().FixtureRegistry.from_module(module, filename, root) if conftest or local or needs_arguments else None
+        _registries[filename] = registry
+    elif registry is None and needs_arguments:
+        root, _ = _fixture_boundary(filename)
+        registry = _fixtures().FixtureRegistry.from_module(module, filename, root)
+        _registries[filename] = registry
+    return registry
+
+
+def _hook_call(function, target):
+    import inspect
+    signature = inspect.signature(function)
+    try:
+        signature.bind(target)
+    except TypeError:
+        signature.bind()
+        return function()
+    return function(target)
+
+
+def _pytest_marks(value):
+    marks = getattr(value, "pytestmark", ())
+    return marks if isinstance(marks, (tuple, list)) else (marks,)
+
+
+def _runtime_skip(value, module):
+    for mark in _pytest_marks(value):
+        name = getattr(mark, "name", None)
+        if name not in ("skip", "skipif"):
+            continue
+        kwargs = getattr(mark, "kwargs", {})
+        args = getattr(mark, "args", ())
+        if name == "skip":
+            return kwargs.get("reason") or (str(args[0]) if args else "pytest skip")
+        conditions = args or (kwargs.get("condition", False),)
+        for condition in conditions:
+            if isinstance(condition, str):
+                condition = eval(condition, vars(module))
+            if condition:
+                return kwargs.get("reason", "pytest skipif")
+    return None
+
+
 def _error(exc, stage):
     message = str(exc) or ("Assertion failed" if isinstance(exc, AssertionError) else type(exc).__name__)
     return {"message": stage + ": " + type(exc).__name__ + ": " + message,
@@ -203,7 +327,7 @@ def _error(exc, stage):
 
 
 def _is_skip(exc):
-    return any(base.__name__ == "SkipTest" and base.__module__ == "unittest.case"
+    return any((base.__name__ == "SkipTest" and base.__module__ == "unittest.case") or (base.__name__ == "Skipped" and base.__module__ == "_pytest.outcomes")
                for base in type(exc).__mro__)
 
 
@@ -212,6 +336,15 @@ def _check_return(value):
         if isinstance(value, types.GeneratorType):
             value.close()
         raise TypeError("Generator tests are unsupported; use a normal or async test function")
+    return value
+
+
+def _completed_return(value):
+    value = _check_return(value)
+    if hasattr(value, "__await__"):
+        if isinstance(value, types.CoroutineType):
+            value.close()
+        raise TypeError("Test returned an unawaited coroutine; await it inside the test")
     return value
 
 
@@ -228,6 +361,13 @@ class Case:
         self.skip = None
         self.target = None
         self.instance = None
+        self.unittest = False
+        self.isolated_asyncio = False
+        self.context = None
+        self.kwargs = dict(request.get("parameters") or {})
+        self.serial = False
+        self.setup_hook = None
+        self.teardown_hook = None
         self.tasks = set()
         self.generators = set()
         self.coverage = {} if coverage else None
@@ -245,17 +385,50 @@ class Case:
             module = _load_module(self.request["file"])
             cls = getattr(module, self.request["class"]) if self.request.get("class") else None
             target = getattr(cls or module, self.request["function"])
+            declarations = []
+            for value in (cls, target):
+                declarations.extend(metadata["argnames"] for metadata in getattr(value, "_taut_parametrize", ()))
+                for mark in _pytest_marks(value):
+                    if getattr(mark, "name", None) == "parametrize":
+                        args = getattr(mark, "args", ())
+                        declarations.append(args[0] if args else mark.kwargs["argnames"])
+            names = []
+            for declaration in declarations:
+                names.extend(part.strip() for part in declaration.split(",")) if isinstance(declaration, str) else names.extend(declaration)
+            if declarations and (len(set(names)) != len(names) or set(names) != set(self.kwargs)):
+                raise TypeError("Parametrize decorator was not fully expanded during collection; use @parametrize or @taut.parametrize directly with literal values and unique argument names")
             for value in (module, cls, target):
                 if getattr(value, "__unittest_skip__", False) or getattr(value, "_taut_skip", False):
                     self.skip = getattr(value, "__unittest_skip_why__", None) or getattr(value, "_taut_skip_reason", "")
                     return
+                reason = _runtime_skip(value, module)
+                if reason is not None:
+                    self.skip = reason
+                    return
             if cls is not None:
                 if any(base.__name__ == "TestCase" and base.__module__ == "unittest.case" for base in cls.__mro__):
                     self.instance = cls(self.request["function"])
+                    self.unittest = True
+                    self.isolated_asyncio = any(base.__name__ == "IsolatedAsyncioTestCase" and base.__module__ == "unittest.async_case" for base in cls.__mro__)
                 else:
                     self.instance = cls()
                 target = getattr(self.instance, self.request["function"])
             self.target = target
+            for name in ("setup_module", "teardown_module"):
+                if callable(getattr(module, name, None)):
+                    raise TypeError(name + " hooks are unsupported; use function-scoped @fixture setup and teardown")
+            if cls is not None:
+                for name in ("setup_class", "teardown_class", "setUpClass", "tearDownClass"):
+                    value = getattr(cls, name, None)
+                    if callable(value) and not (self.unittest and getattr(value, "__module__", "") == "unittest.case"):
+                        raise TypeError(name + " hooks are unsupported; use function-scoped setup or fixtures")
+            if not self.unittest:
+                self.setup_hook = getattr(self.instance, "setup_method", None) if self.instance is not None else getattr(module, "setup_function", None)
+                self.teardown_hook = getattr(self.instance, "teardown_method", None) if self.instance is not None else getattr(module, "teardown_function", None)
+            registry = _registry_for(module, self.request["file"], target, self.kwargs)
+            if registry is not None and registry.needs_context(target, self.kwargs):
+                self.serial = registry.requires_serial(target, self.kwargs)
+                self.context = _fixtures().FixtureContext(registry, provided=self.kwargs, run_async=lambda value: _await_value(value, self))
         except BaseException as exc:
             self.record(exc, "collection")
         finally:
@@ -370,7 +543,7 @@ def _ensure_loop():
 async def _call_async(function):
     value = _check_return(function())
     if hasattr(value, "__await__"):
-        return _check_return(await value)
+        return _completed_return(await value)
     return value
 
 
@@ -422,14 +595,20 @@ async def _async_lifecycle(case):
     setup_ok = False
     async_setup_ok = False
     instance = case.instance
+    hook_ok = False
     try:
+        if case.context is not None:
+            case.kwargs = await case.context.kwargs(case.target)
+        if case.setup_hook is not None:
+            await _call_async(lambda: _hook_call(case.setup_hook, case.target))
+        hook_ok = True
         if instance is not None and hasattr(instance, "setUp"):
             await _call_async(instance.setUp)
         setup_ok = True
         if instance is not None and hasattr(instance, "asyncSetUp"):
             await _call_async(instance.asyncSetUp)
         async_setup_ok = True
-        await _call_async(case.target)
+        await _call_async(lambda: case.target(**case.kwargs))
     except _asyncio.CancelledError:
         raise
     except BaseException as exc:
@@ -449,6 +628,16 @@ async def _async_lifecycle(case):
                     await _call_async(lambda: cleanup(*args, **kwargs))
                 except BaseException as exc:
                     case.record(exc, "cleanup")
+        if hook_ok and case.teardown_hook is not None:
+            try:
+                await _call_async(lambda: _hook_call(case.teardown_hook, case.target))
+            except BaseException as exc:
+                case.record(exc, "teardown hook")
+        if case.context is not None:
+            try:
+                await case.context.close()
+            except BaseException as exc:
+                case.record(exc, "fixture teardown")
         await _cleanup_tasks(case)
 
 
@@ -471,18 +660,83 @@ async def _async_case(case, timeout, shared):
         _running_cases.discard(case)
 
 
+def _await_value(value, case):
+    loop = _ensure_loop()
+    async def await_value():
+        return _completed_return(await value)
+    task = _asyncio.ensure_future(await_value(), loop=loop)
+    try:
+        return loop.run_until_complete(task)
+    finally:
+        case.tasks.discard(task)
+
+
 def _call_sync(function, case):
     value = _check_return(function())
-    if hasattr(value, "__await__"):
-        loop = _ensure_loop()
-        async def await_value():
-            return _check_return(await value)
-        task = _asyncio.ensure_future(await_value(), loop=loop)
-        try:
-            return loop.run_until_complete(task)
-        finally:
-            case.tasks.discard(task)
-    return value
+    return _await_value(value, case) if hasattr(value, "__await__") else value
+
+
+def _run_unittest(case):
+    import functools
+    import unittest
+
+    class Result(unittest.TestResult):
+        def addError(self, test, error):
+            case.record(error[1], "unittest")
+            super().addError(test, error)
+
+        def addFailure(self, test, error):
+            case.record(error[1], "unittest")
+            super().addFailure(test, error)
+
+        def addSubTest(self, test, subtest, error):
+            if error is not None:
+                case.record(error[1], "subtest " + str(subtest))
+            super().addSubTest(test, subtest, error)
+
+        def addSkip(self, test, reason):
+            case.skip = reason
+            super().addSkip(test, reason)
+
+        def addExpectedFailure(self, test, error):
+            case.skip = "expected failure: " + str(error[1])
+            super().addExpectedFailure(test, error)
+
+        def addUnexpectedSuccess(self, test):
+            case.record(AssertionError("Expected failure unexpectedly passed"), "unittest")
+            super().addUnexpectedSuccess(test)
+
+    target = case.target
+    if case.isolated_asyncio and _is_async(target):
+        @functools.wraps(target)
+        async def invoke():
+            if case.context is not None:
+                case.instance.addAsyncCleanup(case.context.close)
+                case.kwargs = await case.context.kwargs(target)
+            return _completed_return(await target(**case.kwargs))
+    else:
+        @functools.wraps(target)
+        def invoke():
+            if _is_async(target):
+                raise TypeError("async unittest methods require unittest.IsolatedAsyncioTestCase")
+            if case.context is not None:
+                case.instance.addCleanup(case.context.close_sync)
+                case.kwargs = case.context.kwargs_sync(target)
+            return _completed_return(target(**case.kwargs))
+    setattr(case.instance, case.request["function"], invoke)
+    if not case.isolated_asyncio:
+        def checked(function):
+            @functools.wraps(function)
+            def call(*args, **kwargs):
+                return _completed_return(function(*args, **kwargs))
+            return call
+        case.instance.setUp = checked(case.instance.setUp)
+        case.instance.tearDown = checked(case.instance.tearDown)
+        case.instance._callCleanup = lambda function, *args, **kwargs: _completed_return(function(*args, **kwargs))
+    result = Result()
+    _completed_return(case.instance.run(result))
+    if result.testsRun != 1:
+        raise TypeError("unittest.TestCase.run must report exactly one test to its result")
 
 
 def _sync_case(case):
@@ -492,11 +746,21 @@ def _sync_case(case):
     owner = _owner.set(case)
     _single_owner = case
     setup_ok = False
+    hook_ok = False
     try:
-        if case.instance is not None and hasattr(case.instance, "setUp"):
+        if case.unittest:
+            _run_unittest(case)
+        else:
+            if case.context is not None:
+                case.kwargs = case.context.kwargs_sync(case.target)
+            if case.setup_hook is not None:
+                _call_sync(lambda: _hook_call(case.setup_hook, case.target), case)
+            hook_ok = True
+        if not case.unittest and case.instance is not None and hasattr(case.instance, "setUp"):
             _call_sync(case.instance.setUp, case)
-        setup_ok = True
-        _call_sync(case.target, case)
+        setup_ok = not case.unittest
+        if not case.unittest:
+            _call_sync(lambda: case.target(**case.kwargs), case)
     except BaseException as exc:
         case.record(exc, "test" if setup_ok else "setup")
     finally:
@@ -505,12 +769,22 @@ def _sync_case(case):
                 _call_sync(case.instance.tearDown, case)
             except BaseException as exc:
                 case.record(exc, "tearDown")
-        if case.instance is not None:
+        if not case.unittest and case.instance is not None:
             for cleanup, args, kwargs in reversed(getattr(case.instance, "_cleanups", [])):
                 try:
                     _call_sync(lambda: cleanup(*args, **kwargs), case)
                 except BaseException as exc:
                     case.record(exc, "cleanup")
+        if hook_ok and case.teardown_hook is not None:
+            try:
+                _call_sync(lambda: _hook_call(case.teardown_hook, case.target), case)
+            except BaseException as exc:
+                case.record(exc, "teardown hook")
+        if case.context is not None and not case.unittest:
+            try:
+                case.context.close_sync()
+            except BaseException as exc:
+                case.record(exc, "fixture teardown")
         if case.tasks or case.generators:
             _ensure_loop().run_until_complete(_cleanup_tasks(case))
         _single_owner = None
@@ -541,6 +815,9 @@ def _run_batch(request):
     def flush():
         if pending:
             loop = _ensure_loop()
+            for case in pending:
+                if case.context is not None:
+                    case.context.concurrent = len(pending) > 1
             async def run():
                 await _asyncio.gather(*(_async_case(case, timeout, len(pending) > 1) for case in pending))
             loop.run_until_complete(run())
@@ -555,9 +832,11 @@ def _run_batch(request):
             case.prepare()
             if case.errors or case.skip is not None:
                 _send(case.result(bool(pending)))
-            elif _is_async(case.target) or (case.instance is not None and any(_is_async(getattr(case.instance, name, None)) for name in ("setUp", "asyncSetUp", "asyncTearDown", "tearDown"))):
+            elif not case.unittest and (_is_async(case.target) or (case.instance is not None and any(_is_async(getattr(case.instance, name, None)) for name in ("setUp", "asyncSetUp", "asyncTearDown", "tearDown")))):
+                if case.serial:
+                    flush()
                 pending.append(case)
-                if len(pending) >= concurrency:
+                if case.serial or len(pending) >= concurrency:
                     flush()
             else:
                 flush()
@@ -571,6 +850,12 @@ def _run_batch(request):
 
 
 def main():
+    if sys.version_info < (3, 12):
+        _send({"startup_error": "Taut requires Python 3.12 or newer; select a supported interpreter with --python."})
+        return
+    if sys.flags.optimize:
+        _send({"startup_error": "Python optimization disables test assertions. Remove PYTHONOPTIMIZE and use an interpreter without -O/-OO."})
+        return
     _send({"ready": True})
     while True:
         request = _read()
