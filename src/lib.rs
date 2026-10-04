@@ -9,6 +9,7 @@ pub mod markers;
 pub mod output;
 pub mod parametrize;
 mod project;
+mod python;
 pub mod runner;
 pub mod selection;
 pub mod worker_pool;

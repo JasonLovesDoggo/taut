@@ -36,46 +36,24 @@ struct WorkerResponse {
     coverage: Option<HashMap<PathBuf, Vec<usize>>>,
 }
 
-/// Locate the interpreter belonging to the invoked environment without starting Python.
+/// Locate Python for callers that do not provide a selected project path.
+/// CLI entry points use the same resolver with their selected project's root.
 pub fn resolve_python(explicit: Option<&Path>) -> PathBuf {
-    if let Some(path) = explicit {
-        return path.to_path_buf();
-    }
-    if let Some(path) = std::env::var_os("TAUT_PYTHON") {
-        return path.into();
-    }
-    let relative = if cfg!(windows) {
-        "Scripts/python.exe"
-    } else {
-        "bin/python"
-    };
-    if let Some(venv) = std::env::var_os("VIRTUAL_ENV") {
-        let path = PathBuf::from(venv).join(relative);
-        if path.is_file() {
-            return path;
-        }
-    }
-    if let Ok(executable) = std::env::current_exe()
-        && let Some(directory) = executable.parent()
-    {
-        let path = directory.join(if cfg!(windows) {
-            "python.exe"
-        } else {
-            "python"
-        });
-        if path.is_file() {
-            return path;
-        }
-    }
-    if let Ok(cwd) = std::env::current_dir() {
-        for directory in cwd.ancestors() {
-            let path = directory.join(".venv").join(relative);
-            if path.is_file() {
-                return path;
-            }
-        }
-    }
-    PathBuf::from(if cfg!(windows) { "python" } else { "python3" })
+    let root =
+        crate::project::root(&std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    crate::python::select(
+        explicit.map(|path| (path.to_path_buf(), crate::python::Source::Cli)),
+        &root,
+    )
+    .path
+}
+
+/// Start the real worker without sending any test or fixture requests.
+pub(crate) fn python_version(python: &PathBuf) -> Result<String> {
+    Ok(Worker::spawn(python)
+        .with_context(|| format!("Could not initialize Python at {}", python.display()))?
+        .python_version
+        .clone())
 }
 
 struct Worker {
@@ -84,6 +62,7 @@ struct Worker {
     responses: Receiver<Result<serde_json::Value>>,
     reader: Option<JoinHandle<()>>,
     healthy: bool,
+    python_version: String,
 }
 
 impl Worker {
@@ -136,6 +115,7 @@ impl Worker {
             responses,
             reader: Some(reader),
             healthy: false,
+            python_version: String::new(),
         };
         worker
             .stdin
@@ -153,6 +133,11 @@ impl Worker {
             ready.get("ready").and_then(|v| v.as_bool()) == Some(true),
             "Invalid worker greeting"
         );
+        worker.python_version = ready
+            .get("python_version")
+            .and_then(|value| value.as_str())
+            .context("Missing Python version in worker greeting")?
+            .to_owned();
         worker.healthy = true;
         Ok(worker)
     }

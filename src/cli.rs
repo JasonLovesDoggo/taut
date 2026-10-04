@@ -98,6 +98,11 @@ pub enum Commands {
         #[arg(default_value = ".")]
         paths: Vec<PathBuf>,
     },
+    /// Explain project, Python and execution settings without collecting tests
+    Doctor {
+        #[arg(default_value = ".")]
+        path: PathBuf,
+    },
     /// Manage dependency selection data
     Cache {
         #[command(subcommand)]
@@ -152,6 +157,7 @@ fn run_with_parsed_args(args: Args) -> i32 {
     let result = match args.command {
         Some(Commands::List { paths }) => list_tests(&paths, &args.options),
         Some(Commands::Watch { paths }) => watch_tests(&paths, &args.options),
+        Some(Commands::Doctor { path }) => doctor(&path, &args.options),
         Some(Commands::Cache { action }) => handle_cache_command(action, args.options.json),
         None => {
             let paths = if args.paths.is_empty() {
@@ -268,45 +274,83 @@ fn runner_options(options: &Options, config: config::Config) -> Result<runner::R
     })
 }
 
-/// Resolve PATH without canonicalizing away a virtual environment's interpreter symlink.
-fn resolve_executable(python: &Path) -> Option<PathBuf> {
-    if python.components().count() != 1 {
-        return is_executable(python).then(|| python.to_path_buf());
-    }
-    std::env::var_os("PATH").and_then(|paths| {
-        std::env::split_paths(&paths).find_map(|directory| {
-            let candidate = directory.join(python);
-            if is_executable(&candidate) {
-                return Some(candidate);
-            }
-            #[cfg(windows)]
-            if candidate.extension().is_none() {
-                let executable = candidate.with_extension("exe");
-                if is_executable(&executable) {
-                    return Some(executable);
-                }
-            }
-            None
-        })
+struct ExecutionSetup {
+    project_root: PathBuf,
+    config_path: Option<PathBuf>,
+    python: crate::python::Python,
+    runtime: runner::RunOptions,
+}
+
+/// One setup path for execution, watch validation, changed selection and doctor.
+fn execution_setup(paths: &[PathBuf], options: &Options) -> Result<ExecutionSetup> {
+    validate_paths(paths)?;
+    let project = config::Config::load_project(&selection_path(&paths[0]))?;
+    let mut runtime = runner_options(options, project.options)?;
+    let explicit = runtime.python.take().map(|path| {
+        let source = if options.python.is_some() {
+            crate::python::Source::Cli
+        } else {
+            crate::python::Source::Config
+        };
+        (path, source)
+    });
+    let python = crate::python::select(explicit, &project.root).resolve()?;
+    runtime.python = Some(python.path.clone());
+    Ok(ExecutionSetup {
+        project_root: project.root,
+        config_path: project.path,
+        python,
+        runtime,
     })
 }
 
-fn is_executable(path: &Path) -> bool {
-    let Ok(metadata) = path.metadata() else {
-        return false;
+fn doctor(path: &Path, options: &Options) -> Result<i32> {
+    let setup = execution_setup(&[path.to_path_buf()], options)?;
+    let version = crate::worker_pool::python_version(&setup.python.path)?;
+    let runtime = &setup.runtime;
+    let isolation = match runtime.isolation {
+        runner::IsolationMode::ProcessPerRun => "process-per-run",
+        runner::IsolationMode::ProcessPerTest => "process-per-test",
     };
-    if !metadata.is_file() {
-        return false;
+    let execution = serde_json::json!({
+        "parallel": runtime.parallel,
+        "jobs": runtime.worker_count(),
+        "isolation": isolation,
+        "async_concurrency": runtime.async_concurrency,
+        "timeout_seconds": runtime.timeout.map(|timeout| timeout.as_secs_f64()),
+        "fail_fast": runtime.fail_fast,
+        "changed": runtime.collect_coverage,
+        "filter": options.filter,
+    });
+    if options.json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "schema_version": 1,
+                "project": {"root": setup.project_root, "config_path": setup.config_path},
+                "python": {"path": setup.python.path, "source": setup.python.source, "version": version},
+                "execution": execution,
+            })
+        );
+    } else {
+        println!("Project: {}", setup.project_root.display());
+        println!(
+            "Configuration: {}",
+            setup
+                .config_path
+                .as_ref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "none (defaults)".to_owned())
+        );
+        println!("Python: {}", setup.python.path.display());
+        println!("Python source: {}", setup.python.source.label());
+        println!("Python version: {version}");
+        println!(
+            "Execution settings: {}",
+            serde_json::to_string_pretty(&execution)?
+        );
     }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        metadata.permissions().mode() & 0o111 != 0
-    }
-    #[cfg(not(unix))]
-    {
-        true
-    }
+    Ok(0)
 }
 
 fn execution_context(options: &runner::RunOptions, python: Option<&Path>) -> String {
@@ -343,8 +387,8 @@ fn execution_context(options: &runner::RunOptions, python: Option<&Path>) -> Str
 
 fn execute(paths: &[PathBuf], options: &Options) -> Result<i32> {
     let started = Instant::now();
-    validate_paths(paths)?;
-    let mut runtime = runner_options(options, config::Config::load(&selection_path(&paths[0]))?)?;
+    let setup = execution_setup(paths, options)?;
+    let runtime = setup.runtime;
     let all_tests = collect(paths, options)?;
     if all_tests.is_empty() {
         if options.json {
@@ -365,14 +409,8 @@ fn execute(paths: &[PathBuf], options: &Options) -> Result<i32> {
     // Normal runs never instantiate the selector or parse unrelated source files.
     let mut selector = options.changed.then(selection::TestSelector::new);
     if let Some(selector) = &mut selector {
-        let selected = crate::worker_pool::resolve_python(runtime.python.as_deref());
-        let python = resolve_executable(&selected);
-        if let Some(python) = &python {
-            selector.set_python_environment(python);
-            // Execute the same lexical path whose environment and metadata we inspected.
-            runtime.python = Some(python.clone());
-        }
-        selector.set_execution_context(&execution_context(&runtime, python.as_deref()));
+        selector.set_python_environment(&setup.python.path);
+        selector.set_execution_context(&execution_context(&runtime, Some(&setup.python.path)));
     }
     let mut selected_out = Vec::new();
     // Decorator spelling is not proof of skip semantics. Runtime metadata decides.
@@ -415,9 +453,8 @@ fn execute(paths: &[PathBuf], options: &Options) -> Result<i32> {
 }
 
 fn watch_tests(paths: &[PathBuf], options: &Options) -> Result<i32> {
-    validate_paths(paths)?;
-    // Validate configuration before starting a long-lived watch session.
-    runner_options(options, config::Config::load(&selection_path(&paths[0]))?)?;
+    // Validate configuration and interpreter selection before starting a watch session.
+    execution_setup(paths, options)?;
     let (tx, rx) = mpsc::channel();
     let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
         let _ = tx.send(event);

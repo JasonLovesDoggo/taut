@@ -904,7 +904,7 @@ def main():
     if sys.flags.optimize:
         _send({"startup_error": "Python optimization disables test assertions. Remove PYTHONOPTIMIZE and use an interpreter without -O/-OO."})
         return
-    _send({"ready": True})
+    _send({"ready": True, "python_version": ".".join(map(str, sys.version_info[:3]))})
     while True:
         request = _read()
         if request is None or request.get("cmd") == "shutdown":

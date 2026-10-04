@@ -25,6 +25,7 @@ pub(crate) fn root(path: &Path) -> PathBuf {
             .iter()
             .any(|name| ancestor.join(name).is_file())
             || ancestor.join(".git").exists()
+            || ancestor.join(".venv").is_dir()
         {
             return ancestor.to_path_buf();
         }

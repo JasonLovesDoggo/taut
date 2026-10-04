@@ -101,7 +101,18 @@ impl Default for RunOptions {
 
 impl RunOptions {
     pub fn python_path(&self) -> PathBuf {
-        crate::worker_pool::resolve_python(self.python.as_deref())
+        self.python
+            .clone()
+            .unwrap_or_else(|| crate::worker_pool::resolve_python(None))
+    }
+
+    pub(crate) fn worker_count(&self) -> usize {
+        if self.parallel {
+            self.jobs
+                .unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get()))
+        } else {
+            1
+        }
     }
 }
 
@@ -151,13 +162,7 @@ where
         "timeout must be greater than zero"
     );
     let start = Instant::now();
-    let workers = if options.parallel {
-        options
-            .jobs
-            .unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get()))
-    } else {
-        1
-    };
+    let workers = options.worker_count();
     let results = crate::worker_pool::WorkerPool::new(workers)
         .run_tests_with_options(items, options, on_result)?;
     Ok(TestResults {

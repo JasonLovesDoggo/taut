@@ -19,22 +19,25 @@ pub struct Config {
     pub fail_fast: bool,
 }
 
+pub(crate) struct ProjectConfig {
+    pub root: PathBuf,
+    pub path: Option<PathBuf>,
+    pub options: Config,
+}
+
 impl Config {
-    /// The nearest pyproject.toml is the project boundary, even without tool.taut.
+    /// Load configuration from the nearest project boundary.
     pub fn load(start: &Path) -> Result<Self> {
+        Ok(Self::load_project(start)?.options)
+    }
+
+    pub(crate) fn load_project(start: &Path) -> Result<ProjectConfig> {
         let start = start
             .canonicalize()
             .with_context(|| format!("cannot access {}", start.display()))?;
-        let directory = if start.is_file() {
-            start.parent().unwrap()
-        } else {
-            &start
-        };
-        for directory in directory.ancestors() {
-            let path = directory.join("pyproject.toml");
-            if !path.exists() {
-                continue;
-            }
+        let root = crate::project::root(&start);
+        let path = root.join("pyproject.toml");
+        let (options, path) = if path.exists() {
             let content = std::fs::read_to_string(&path)
                 .with_context(|| format!("cannot read {}", path.display()))?;
             let mut config = Self::parse(&content)
@@ -43,11 +46,17 @@ impl Config {
                 && python.is_relative()
                 && python.components().count() > 1
             {
-                config.python = Some(directory.join(python));
+                config.python = Some(root.join(python));
             }
-            return Ok(config);
-        }
-        Ok(Self::default())
+            (config, Some(path))
+        } else {
+            (Self::default(), None)
+        };
+        Ok(ProjectConfig {
+            root,
+            path,
+            options,
+        })
     }
 
     fn parse(content: &str) -> Result<Self> {
