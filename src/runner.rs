@@ -9,6 +9,9 @@ use std::time::{Duration, Instant};
 pub struct TestError {
     pub message: String,
     pub traceback: Option<String>,
+    /// Presentation-only traceback; JSON always retains the original traceback.
+    #[serde(default, skip_serializing)]
+    pub focused_traceback: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -193,6 +196,7 @@ pub(crate) fn failed_result(item: &TestItem, message: String, duration: Duration
         error: Some(TestError {
             message,
             traceback: None,
+            focused_traceback: None,
         }),
         skipped: false,
         skip_reason: None,

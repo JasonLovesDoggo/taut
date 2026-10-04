@@ -505,7 +505,18 @@ fn execute(paths: &[PathBuf], options: &Options) -> Result<i32> {
     if options.json {
         output::print_json(&results, collected, &selected_out);
     } else {
-        output::print_run_summary(&results, collected, selected_out.len(), options.quiet);
+        output::print_run_summary_with_options(
+            &results,
+            collected,
+            selected_out.len(),
+            &output::SummaryOptions {
+                quiet: options.quiet,
+                verbose: options.verbose,
+                runtime: Some(&runtime),
+                explicit_isolation: options.isolation.is_some(),
+                explicit_async_concurrency: options.async_concurrency.is_some(),
+            },
+        );
     }
     Ok(if results.all_passed() { 0 } else { 1 })
 }

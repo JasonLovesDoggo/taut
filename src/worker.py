@@ -320,10 +320,43 @@ def _runtime_skip(value, module):
     return None
 
 
+def _focus_traceback(summary, exc):
+    # Filter structured frames, never rendered text: exception messages, notes,
+    # and even user-compiled filenames may contain identical-looking text.
+    pending = [(summary, exc)]
+    seen = set()
+    while pending:
+        current, error = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        frames = []
+        for frame, (live_frame, _) in zip(current.stack, traceback.walk_tb(error.__traceback__)):
+            internal = (
+                live_frame.f_globals is globals() and frame.filename == "<taut worker>"
+            ) or (
+                _fixture_runtime is not None
+                and live_frame.f_globals is vars(_fixture_runtime)
+                and frame.filename == "<taut fixtures>"
+            )
+            if not internal:
+                frames.append(frame)
+        current.stack = traceback.StackSummary.from_list(frames)
+        for attribute in ("__cause__", "__context__"):
+            child = getattr(current, attribute, None)
+            if child is not None:
+                pending.append((child, getattr(error, attribute)))
+        if current.exceptions is not None:
+            pending.extend(zip(current.exceptions, error.exceptions))
+
+
 def _error(exc, stage):
     message = str(exc) or ("Assertion failed" if isinstance(exc, AssertionError) else type(exc).__name__)
+    summary = traceback.TracebackException.from_exception(exc, capture_locals=False, compact=True)
+    raw = "".join(summary.format())
+    _focus_traceback(summary, exc)
     return {"message": stage + ": " + type(exc).__name__ + ": " + message,
-            "traceback": "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))}
+            "traceback": raw, "focused_traceback": "".join(summary.format())}
 
 
 def _is_skip(exc):
@@ -469,7 +502,8 @@ class Case:
         error = None
         if self.errors:
             error = {"message": "; ".join(e["message"] for e in self.errors),
-                     "traceback": "\n".join(e["traceback"] for e in self.errors)}
+                     "traceback": "\n".join(e["traceback"] for e in self.errors),
+                     "focused_traceback": "\n".join(e["focused_traceback"] for e in self.errors)}
         result = {"id": self.request["id"], "passed": error is None,
                   "error": error, "skipped": self.skip is not None and error is None,
                   "skip_reason": self.skip, "stdout": output[0], "stderr": output[1],
