@@ -1,214 +1,376 @@
-//! Worker pool for running tests in warm Python processes.
-//!
-//! This module implements N long-lived Python workers that communicate via MessagePack-over-stdio
-//! with length-prefixed binary protocol. Workers stay alive across multiple test runs, eliminating
-//! interpreter startup overhead.
+//! Warm Python workers, with a dependency-free framed JSON protocol.
+//! A private Python descriptor carries replies so test writes to fd 1 cannot corrupt it.
 
 use crate::discovery::TestItem;
-use crate::runner::{TestCoverage, TestError, TestResult};
-use anyhow::Result;
-use crossbeam_channel::{Sender, bounded};
-use serde::{Deserialize, Serialize};
+use crate::markers::MarkerValue;
+use crate::runner::{
+    IsolationMode, RunOptions, TestCoverage, TestError, TestResult, failed_result,
+};
+use anyhow::{Context, Result};
+use crossbeam_channel::{Receiver, Sender, unbounded};
+use serde::Deserialize;
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
-use std::thread;
-use std::time::Duration;
+use std::path::{Path, PathBuf};
+use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::{Condvar, Mutex};
+use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 
-// Worker script is embedded at build time from src/worker.py
 include!(concat!(env!("OUT_DIR"), "/worker_script.rs"));
+const MAX_FRAME: usize = 64 * 1024 * 1024;
+const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
-static REQUEST_ID: AtomicU64 = AtomicU64::new(1);
-
-fn next_request_id() -> u64 {
-    REQUEST_ID.fetch_add(1, Ordering::SeqCst)
-}
-
-/// Request sent to worker (serialized as MessagePack).
-#[derive(Serialize, Deserialize, Clone)]
-struct WorkerRequest {
-    id: u64,
-    file: String,
-    function: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    class: Option<String>,
-    collect_coverage: bool,
-}
-
-/// Response from worker (serialized as MessagePack).
-#[derive(Serialize, Deserialize)]
+#[derive(Deserialize)]
 struct WorkerResponse {
-    id: u64,
+    id: usize,
     passed: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<WorkerError>,
+    error: Option<TestError>,
+    #[serde(default)]
     stdout: String,
+    #[serde(default)]
     stderr: String,
     duration_sec: f64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    coverage: Option<HashMap<String, Vec<usize>>>,
+    #[serde(default)]
+    skipped: bool,
+    skip_reason: Option<String>,
+    coverage: Option<HashMap<PathBuf, Vec<usize>>>,
 }
 
-#[derive(Serialize, Deserialize)]
-struct WorkerError {
-    message: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    traceback: Option<String>,
+/// Locate Python for callers that do not provide a selected project path.
+/// CLI entry points use the same resolver with their selected project's root.
+pub fn resolve_python(explicit: Option<&Path>) -> PathBuf {
+    let root =
+        crate::project::root(&std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    crate::python::select(
+        explicit.map(|path| (path.to_path_buf(), crate::python::Source::Cli)),
+        &root,
+    )
+    .path
 }
 
-/// A single Python worker process.
+/// Start the real worker without sending any test or fixture requests.
+pub(crate) fn python_version(python: &PathBuf) -> Result<String> {
+    let worker = Worker::spawn(python)
+        .with_context(|| format!("Could not initialize Python at {}", python.display()))?;
+    let version = worker.python_version.clone();
+    worker.shutdown()?;
+    Ok(version)
+}
+
 struct Worker {
     child: Child,
-    stdin: std::process::ChildStdin,
-    stdout: std::process::ChildStdout,
+    stdin: ChildStdin,
+    responses: Receiver<Result<serde_json::Value>>,
+    reader: Option<JoinHandle<()>>,
+    reaped: bool,
+    python_version: String,
 }
 
 impl Worker {
-    fn spawn() -> Result<Self> {
-        let mut child = Command::new("python3")
-            .args(["-u", "-c", WORKER_SCRIPT])
+    fn spawn(python: &PathBuf) -> Result<Self> {
+        let bootstrap = format!(
+            "import sys; exec(compile(sys.stdin.buffer.read({}), '<taut worker>', 'exec'))",
+            WORKER_SCRIPT.len()
+        );
+        let mut command = Command::new(python);
+        command
+            .args(["-u", "-c", &bootstrap])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit()) // Let Python errors go to terminal
-            .spawn()?;
-
-        let stdin = child.stdin.take().expect("stdin not captured");
-        let stdout = child.stdout.take().expect("stdout not captured");
-
-        Ok(Self {
+            .stderr(Stdio::inherit());
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            command.process_group(0);
+        }
+        let mut child = command
+            .spawn()
+            .with_context(|| format!("Could not launch Python at {}", python.display()))?;
+        let stdin = child.stdin.take().context("Worker stdin unavailable")?;
+        let mut stdout = child.stdout.take().context("Worker stdout unavailable")?;
+        let (tx, responses) = unbounded();
+        let reader = thread::spawn(move || {
+            loop {
+                let response = (|| -> Result<serde_json::Value> {
+                    let mut length = [0; 4];
+                    stdout
+                        .read_exact(&mut length)
+                        .context("Python worker exited before returning a result")?;
+                    let length = u32::from_le_bytes(length) as usize;
+                    anyhow::ensure!(length <= MAX_FRAME, "Worker response exceeds 64 MiB");
+                    let mut data = vec![0; length];
+                    stdout
+                        .read_exact(&mut data)
+                        .context("Incomplete Python worker response")?;
+                    Ok(serde_json::from_slice(&data)?)
+                })();
+                let failed = response.is_err();
+                if tx.send(response).is_err() || failed {
+                    break;
+                }
+            }
+        });
+        let mut worker = Self {
             child,
             stdin,
-            stdout,
-        })
+            responses,
+            reader: Some(reader),
+            reaped: false,
+            python_version: String::new(),
+        };
+        worker
+            .stdin
+            .write_all(WORKER_SCRIPT.as_bytes())
+            .context("Could not send Python worker source")?;
+        worker.stdin.flush()?;
+        let ready = worker
+            .responses
+            .recv_timeout(Duration::from_secs(30))
+            .context("Python worker did not start within 30 seconds")??;
+        if let Some(error) = ready.get("startup_error").and_then(|value| value.as_str()) {
+            anyhow::bail!(error.to_owned());
+        }
+        anyhow::ensure!(
+            ready.get("ready").and_then(|v| v.as_bool()) == Some(true),
+            "Invalid worker greeting"
+        );
+        worker.python_version = ready
+            .get("python_version")
+            .and_then(|value| value.as_str())
+            .context("Missing Python version in worker greeting")?
+            .to_owned();
+        Ok(worker)
     }
 
-    fn send_request(&mut self, req: &WorkerRequest) -> Result<()> {
-        let data = rmp_serde::to_vec(req)?;
-        let len = (data.len() as u32).to_le_bytes();
-        self.stdin.write_all(&len)?;
-        self.stdin.write_all(&data)?;
-        self.stdin.flush()?;
+    fn has_exited_without_reaping(&mut self) -> std::io::Result<bool> {
+        #[cfg(unix)]
+        {
+            // WNOWAIT preserves our leader's PID until the owned group is killed.
+            // In particular, a graceful worker exit must not allow PID reuse.
+            let mut status = std::mem::MaybeUninit::<libc::siginfo_t>::zeroed();
+            // SAFETY: status points to initialized, writable siginfo_t storage;
+            // this queries only the Child owned by this Worker and never reaps it.
+            let result = unsafe {
+                libc::waitid(
+                    libc::P_PID,
+                    self.child.id() as libc::id_t,
+                    status.as_mut_ptr(),
+                    libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+                )
+            };
+            if result != 0 {
+                let error = std::io::Error::last_os_error();
+                if error.kind() == std::io::ErrorKind::Interrupted {
+                    return Ok(false);
+                }
+                if error.raw_os_error() == Some(libc::ECHILD) {
+                    // An external reaper has released our PID; never signal a
+                    // process group whose identity we can no longer retain.
+                    self.reaped = true;
+                }
+                return Err(error);
+            }
+            // SAFETY: zeroed storage remains initialized, and waitid may fill it.
+            Ok(unsafe { status.assume_init() }.si_signo == libc::SIGCHLD)
+        }
+        #[cfg(not(unix))]
+        {
+            self.child.try_wait().map(|status| status.is_some())
+        }
+    }
+
+    /// Complete a healthy worker's exit handlers before certifying the run.
+    /// Drop remains responsible for forced cleanup on any error or unwinding.
+    fn shutdown(mut self) -> Result<()> {
+        let shutdown = b"{\"cmd\":\"shutdown\"}";
+        self.stdin
+            .write_all(&(shutdown.len() as u32).to_le_bytes())
+            .and_then(|_| self.stdin.write_all(shutdown))
+            .and_then(|_| self.stdin.flush())
+            .context("Could not request Python worker shutdown")?;
+        let deadline = Instant::now() + SHUTDOWN_TIMEOUT;
+        loop {
+            if self
+                .has_exited_without_reaping()
+                .context("Could not observe Python worker shutdown")?
+            {
+                break;
+            }
+            anyhow::ensure!(
+                Instant::now() < deadline,
+                "Python worker shutdown timed out after {} seconds; exit handlers or threads did not finish",
+                SHUTDOWN_TIMEOUT.as_secs()
+            );
+            thread::sleep(Duration::from_millis(1));
+        }
+        // The Unix leader remains unreaped until its descendants are killed,
+        // preserving the process-group identity even after a graceful exit.
+        self.kill_owned_processes();
+        let status = self
+            .child
+            .wait()
+            .context("Could not reap Python worker after shutdown")?;
+        self.reaped = true;
+        anyhow::ensure!(
+            status.success(),
+            "Python worker exited unsuccessfully during shutdown: {status}"
+        );
         Ok(())
     }
 
-    fn read_response(&mut self) -> Result<WorkerResponse> {
-        let mut len_bytes = [0u8; 4];
-        if self.stdout.read_exact(&mut len_bytes).is_err() {
-            anyhow::bail!("Worker EOF (process died)");
+    fn kill_owned_processes(&mut self) {
+        #[cfg(unix)]
+        {
+            let leader = self.child.id() as libc::pid_t;
+            // SAFETY: process_group(0) created this group for our still-unreaped
+            // child, so its PID cannot be reused. Exclude our own group as a final
+            // guard. getpgid cannot validate zombies on macOS (it returns ESRCH).
+            unsafe {
+                if leader > 0 && leader != libc::getpgrp() {
+                    libc::killpg(leader, libc::SIGKILL);
+                }
+            }
         }
-        let len = u32::from_le_bytes(len_bytes) as usize;
-
-        let mut data = vec![0u8; len];
-        self.stdout.read_exact(&mut data)?;
-
-        let resp: WorkerResponse = rmp_serde::from_slice(&data)?;
-        Ok(resp)
+        let _ = self.child.kill();
     }
 
-    fn run_test(&mut self, item: &TestItem, collect_coverage: bool) -> Result<TestResult> {
-        let request_id = next_request_id();
-
-        let req = WorkerRequest {
-            id: request_id,
-            file: item
-                .file
-                .canonicalize()
-                .unwrap_or(item.file.clone())
-                .to_string_lossy()
-                .into_owned(),
-            function: item.function.clone(),
-            class: item.class.clone(),
-            collect_coverage,
-        };
-
-        self.send_request(&req)?;
-        let resp = self.read_response()?;
-
-        let duration = Duration::from_secs_f64(resp.duration_sec);
-
-        let coverage = if collect_coverage {
-            resp.coverage.as_ref().map(|coverage_map| {
-                let files: HashMap<PathBuf, Vec<usize>> = coverage_map
-                    .iter()
-                    .map(|(k, v)| (PathBuf::from(k), v.clone()))
-                    .collect();
-                TestCoverage { files }
-            })
-        } else {
-            None
-        };
-
-        let error = resp.error.map(|e| TestError {
-            message: e.message,
-            traceback: e.traceback,
-        });
-
-        Ok(TestResult {
-            item: item.clone(),
-            passed: resp.passed,
-            duration,
-            error,
-            skipped: false,
-            skip_reason: None,
-            coverage,
-            stdout: if resp.stdout.is_empty() {
-                None
+    fn run_batch(
+        &mut self,
+        batch: &[(usize, &TestItem)],
+        options: &RunOptions,
+        mut completed: impl FnMut(usize, TestResult),
+    ) -> Result<bool> {
+        let tests: Vec<_> = batch.iter().map(|(idx, item)| serde_json::json!({
+            "id": idx, "file": item.file.canonicalize().unwrap_or_else(|_| item.file.clone()),
+            "function": item.function, "class": item.class, "parameters": item.parameters(),
+        })).collect();
+        let data = serde_json::to_vec(&serde_json::json!({
+            "tests": tests, "collect_coverage": options.collect_coverage,
+            "async_concurrency": if options.parallel { options.async_concurrency } else { 1 },
+            "timeout": options.timeout.map(|timeout| timeout.as_secs_f64()),
+        }))?;
+        self.stdin.write_all(&(data.len() as u32).to_le_bytes())?;
+        self.stdin.write_all(&data)?;
+        self.stdin.flush()?;
+        let mut remaining: HashMap<usize, &TestItem> = batch.iter().copied().collect();
+        loop {
+            let raw = if let Some(timeout) = options.timeout {
+                self.responses
+                    .recv_timeout(timeout)
+                    .map_err(|error| match error {
+                        crossbeam_channel::RecvTimeoutError::Timeout => anyhow::anyhow!(
+                            "Test exceeded timeout of {:.3}s; worker terminated",
+                            timeout.as_secs_f64()
+                        ),
+                        _ => anyhow::anyhow!("Python worker response channel closed"),
+                    })??
             } else {
-                Some(resp.stdout)
-            },
-            stderr: if resp.stderr.is_empty() {
-                None
-            } else {
-                Some(resp.stderr)
-            },
-        })
-    }
-
-    fn shutdown(&mut self) {
-        // Send shutdown command as MessagePack
-        let mut shutdown_msg = std::collections::HashMap::new();
-        shutdown_msg.insert("cmd", "shutdown");
-        if let Ok(data) = rmp_serde::to_vec(&shutdown_msg) {
-            let len = (data.len() as u32).to_le_bytes();
-            let _ = self.stdin.write_all(&len);
-            let _ = self.stdin.write_all(&data);
-            let _ = self.stdin.flush();
+                self.responses
+                    .recv()
+                    .context("Python worker response channel closed")??
+            };
+            if raw.get("done").and_then(|value| value.as_bool()) == Some(true) {
+                let restart = raw
+                    .get("restart")
+                    .and_then(|value| value.as_bool())
+                    .unwrap_or(false);
+                anyhow::ensure!(
+                    remaining.is_empty() || restart,
+                    "Worker ended batch before all tests completed"
+                );
+                return Ok(restart);
+            }
+            let response: WorkerResponse = serde_json::from_value(raw)?;
+            let item = remaining
+                .remove(&response.id)
+                .context("Unexpected or duplicate worker response ID")?;
+            anyhow::ensure!(
+                response.duration_sec.is_finite() && response.duration_sec >= 0.0,
+                "Invalid worker duration"
+            );
+            completed(
+                response.id,
+                TestResult {
+                    item: item.clone(),
+                    passed: response.passed,
+                    duration: Duration::from_secs_f64(response.duration_sec),
+                    error: response.error,
+                    skipped: response.skipped,
+                    skip_reason: response.skip_reason,
+                    coverage: response.coverage.map(|files| TestCoverage { files }),
+                    stdout: (!response.stdout.is_empty()).then_some(response.stdout),
+                    stderr: (!response.stderr.is_empty()).then_some(response.stderr),
+                },
+            );
         }
-        let _ = self.child.wait();
-    }
-
-    fn is_alive(&mut self) -> bool {
-        matches!(self.child.try_wait(), Ok(None))
     }
 }
 
-/// Task to be executed by a worker.
-struct Task {
-    idx: usize,
-    item: TestItem,
-    collect_coverage: bool,
+impl Drop for Worker {
+    fn drop(&mut self) {
+        if !self.reaped {
+            self.kill_owned_processes();
+            let _ = self.child.wait();
+        }
+        // Descendant processes may have inherited the pipe. Never block shutdown on them.
+        if self
+            .reader
+            .as_ref()
+            .is_some_and(|reader| reader.is_finished())
+        {
+            let _ = self.reader.take().unwrap().join();
+        }
+    }
 }
 
-/// Completed task result.
-struct Completed {
-    idx: usize,
-    result: TestResult,
+fn finish_worker(worker: &mut Option<Worker>, queue: &Queue) {
+    if let Some(worker) = worker.take()
+        && let Err(error) = worker.shutdown()
+    {
+        let mut state = queue.state.lock().unwrap();
+        state.stopped = true;
+        state
+            .fatal_error
+            .get_or_insert_with(|| format!("{error:#}"));
+        queue.changed.notify_all();
+    }
 }
 
-/// A pool of warm Python workers.
+struct QueueState {
+    next: usize,
+    active: usize,
+    serial_active: bool,
+    stopped: bool,
+    fatal_error: Option<String>,
+}
+struct Queue {
+    state: Mutex<QueueState>,
+    changed: Condvar,
+}
+
+fn is_serial(item: &TestItem) -> bool {
+    item.markers.iter().any(|marker| {
+        marker.name == "mark"
+            && matches!(
+                marker.args.kwargs.get("serial"),
+                Some(MarkerValue::Bool(true))
+            )
+    })
+}
+
+/// Each worker owns a Python process for the entire run, including serial barriers.
 pub struct WorkerPool {
     num_workers: usize,
 }
 
 impl WorkerPool {
     pub fn new(num_workers: usize) -> Self {
-        Self { num_workers }
+        Self {
+            num_workers: num_workers.max(1),
+        }
     }
 
-    /// Run tests using the worker pool.
     pub fn run_tests<F>(
         &self,
         items: &[TestItem],
@@ -218,203 +380,181 @@ impl WorkerPool {
     where
         F: Fn(&TestResult) + Send + Sync,
     {
+        self.run_tests_with_options(
+            items,
+            &RunOptions {
+                jobs: Some(self.num_workers),
+                collect_coverage,
+                ..RunOptions::default()
+            },
+            on_result,
+        )
+    }
+
+    pub fn run_tests_with_options<F>(
+        &self,
+        items: &[TestItem],
+        options: &RunOptions,
+        on_result: F,
+    ) -> Result<Vec<TestResult>>
+    where
+        F: Fn(&TestResult) + Send + Sync,
+    {
         if items.is_empty() {
             return Ok(Vec::new());
         }
-
-        // For small test counts, just use a single worker
-        let num_workers = self.num_workers.min(items.len());
-
-        // Create a shared work queue
-        let queue: Arc<(Mutex<std::collections::VecDeque<Task>>, Condvar)> = Arc::new((
-            Mutex::new(std::collections::VecDeque::new()),
-            Condvar::new(),
-        ));
-
-        // Populate the queue
+        let workers = self.num_workers.min(items.len());
+        let batch_size = if options.isolation == IsolationMode::ProcessPerTest
+            || options.fail_fast
+            || options.timeout.is_some()
         {
-            let (lock, cvar) = &*queue;
-            let mut q = lock.lock().unwrap();
-            for (idx, item) in items.iter().enumerate() {
-                q.push_back(Task {
-                    idx,
-                    item: item.clone(),
-                    collect_coverage,
-                });
+            if options.isolation == IsolationMode::ProcessPerTest || options.fail_fast {
+                1
+            } else {
+                options.async_concurrency
             }
-            cvar.notify_all();
-        }
-
-        // Channel to collect results (bounded to number of items for backpressure)
-        let (tx, rx) = bounded::<Completed>(items.len().max(1));
-
-        // Spawn worker threads
-        let mut handles = Vec::with_capacity(num_workers);
-        for _ in 0..num_workers {
-            let queue = Arc::clone(&queue);
-            let tx = tx.clone();
-            let total_tasks = items.len();
-
-            handles.push(thread::spawn(move || {
-                worker_thread(queue, tx, total_tasks);
-            }));
-        }
-
-        // Drop our sender so rx closes when all workers finish
-        drop(tx);
-
-        // Collect results with streaming callback
-        let on_result = Arc::new(on_result);
-        let mut results_by_idx: Vec<Option<TestResult>> = vec![None; items.len()];
-        let mut received = 0;
-
-        for completed in rx {
-            on_result(&completed.result);
-            results_by_idx[completed.idx] = Some(completed.result);
-            received += 1;
-            if received >= items.len() {
-                break;
+        } else {
+            (items.len() / (workers * 4))
+                .clamp(1, 32)
+                .max(options.async_concurrency)
+        };
+        let queue = Queue {
+            state: Mutex::new(QueueState {
+                next: 0,
+                active: 0,
+                serial_active: false,
+                stopped: false,
+                fatal_error: None,
+            }),
+            changed: Condvar::new(),
+        };
+        let (tx, rx) = unbounded();
+        let python = options.python_path();
+        let mut results: Vec<Option<TestResult>> = vec![None; items.len()];
+        thread::scope(|scope| {
+            for _ in 0..workers {
+                let tx = tx.clone();
+                let queue = &queue;
+                let python = &python;
+                scope.spawn(move || worker_thread(items, options, python, batch_size, queue, tx));
             }
+            drop(tx);
+            for (idx, result) in rx {
+                on_result(&result);
+                results[idx] = Some(result);
+            }
+        });
+        if let Some(error) = queue.state.lock().unwrap().fatal_error.take() {
+            anyhow::bail!(error);
         }
-
-        // Wait for all worker threads to finish
-        for handle in handles {
-            let _ = handle.join();
-        }
-
-        // Collect results in order
-        let results = results_by_idx
-            .into_iter()
-            .enumerate()
-            .map(|(idx, opt)| {
-                opt.unwrap_or_else(|| TestResult {
-                    item: items[idx].clone(),
-                    passed: false,
-                    duration: Duration::ZERO,
-                    error: Some(TestError {
-                        message: "Test was not executed (worker pool error)".to_string(),
-                        traceback: None,
-                    }),
-                    skipped: false,
-                    skip_reason: None,
-                    coverage: None,
-                    stdout: None,
-                    stderr: None,
-                })
-            })
-            .collect();
-
-        Ok(results)
+        Ok(results.into_iter().flatten().collect())
     }
 }
 
 fn worker_thread(
-    queue: Arc<(Mutex<std::collections::VecDeque<Task>>, Condvar)>,
-    tx: Sender<Completed>,
-    total_tasks: usize,
+    items: &[TestItem],
+    options: &RunOptions,
+    python: &PathBuf,
+    batch_size: usize,
+    queue: &Queue,
+    tx: Sender<(usize, TestResult)>,
 ) {
-    let mut worker = match Worker::spawn() {
-        Ok(w) => w,
-        Err(e) => {
-            eprintln!("Failed to spawn worker: {}", e);
-            return;
-        }
-    };
-
-    let mut tasks_completed = 0;
-
+    let mut worker: Option<Worker> = None;
     loop {
-        // Try to get a task from the queue
-        let task = {
-            let (lock, _cvar) = &*queue;
-            let mut q = lock.lock().unwrap();
-            q.pop_front()
+        let (batch, serial) = {
+            let mut state = queue.state.lock().unwrap();
+            loop {
+                if state.stopped || state.next == items.len() {
+                    drop(state);
+                    finish_worker(&mut worker, queue);
+                    return;
+                }
+                let serial = is_serial(&items[state.next]);
+                if !state.serial_active && (!serial || state.active == 0) {
+                    break;
+                }
+                state = queue.changed.wait(state).unwrap();
+            }
+            let start = state.next;
+            let serial = is_serial(&items[start]);
+            state.next += 1;
+            if !serial {
+                while state.next < items.len()
+                    && state.next - start < batch_size
+                    && !is_serial(&items[state.next])
+                {
+                    state.next += 1;
+                }
+            }
+            state.active += 1;
+            state.serial_active = serial;
+            ((start..state.next).collect::<Vec<_>>(), serial)
         };
-
-        let Some(task) = task else {
-            // No more tasks
-            break;
-        };
-
-        // Execute the task
-        let result = match worker.run_test(&task.item, task.collect_coverage) {
-            Ok(r) => r,
-            Err(e) => {
-                // Worker might have died; try to respawn
-                if !worker.is_alive() {
-                    if let Ok(new_worker) = Worker::spawn() {
-                        worker = new_worker;
-                        // Retry the test
-                        match worker.run_test(&task.item, task.collect_coverage) {
-                            Ok(r) => r,
-                            Err(e2) => TestResult {
-                                item: task.item.clone(),
-                                passed: false,
-                                duration: Duration::ZERO,
-                                error: Some(TestError {
-                                    message: format!("Worker error after respawn: {}", e2),
-                                    traceback: None,
-                                }),
-                                skipped: false,
-                                skip_reason: None,
-                                coverage: None,
-                                stdout: None,
-                                stderr: None,
-                            },
-                        }
-                    } else {
-                        TestResult {
-                            item: task.item.clone(),
-                            passed: false,
-                            duration: Duration::ZERO,
-                            error: Some(TestError {
-                                message: format!("Worker crashed and respawn failed: {}", e),
-                                traceback: None,
-                            }),
-                            skipped: false,
-                            skip_reason: None,
-                            coverage: None,
-                            stdout: None,
-                            stderr: None,
-                        }
-                    }
-                } else {
-                    TestResult {
-                        item: task.item.clone(),
-                        passed: false,
-                        duration: Duration::ZERO,
-                        error: Some(TestError {
-                            message: format!("Worker error: {}", e),
-                            traceback: None,
-                        }),
-                        skipped: false,
-                        skip_reason: None,
-                        coverage: None,
-                        stdout: None,
-                        stderr: None,
+        let mut pending: Vec<_> = batch.into_iter().map(|idx| (idx, &items[idx])).collect();
+        while !pending.is_empty() {
+            let start = Instant::now();
+            let mut done = Vec::new();
+            if worker.is_none() {
+                match Worker::spawn(python) {
+                    Ok(started) => worker = Some(started),
+                    Err(error) => {
+                        let mut state = queue.state.lock().unwrap();
+                        state.stopped = true;
+                        state
+                            .fatal_error
+                            .get_or_insert_with(|| format!("{error:#}"));
+                        queue.changed.notify_all();
+                        return;
                     }
                 }
             }
-        };
-
-        // Send result back
-        if tx
-            .send(Completed {
-                idx: task.idx,
-                result,
-            })
-            .is_err()
-        {
-            break;
+            let execution = worker
+                .as_mut()
+                .unwrap()
+                .run_batch(&pending, options, |idx, result| {
+                    done.push(idx);
+                    if options.fail_fast && !result.passed && !result.skipped {
+                        queue.state.lock().unwrap().stopped = true;
+                        queue.changed.notify_all();
+                    }
+                    let _ = tx.send((idx, result));
+                });
+            pending.retain(|(idx, _)| !done.contains(idx));
+            match execution {
+                Ok(restart) => {
+                    if restart {
+                        worker.take();
+                    }
+                }
+                Err(error) => {
+                    worker.take();
+                    if pending.is_empty() {
+                        let mut state = queue.state.lock().unwrap();
+                        state.stopped = true;
+                        state.fatal_error.get_or_insert_with(|| {
+                            format!("Worker failed to finish its batch: {error:#}")
+                        });
+                    }
+                    for (idx, item) in pending.drain(..) {
+                        let _ = tx.send((
+                            idx,
+                            failed_result(item, format!("{error:#}"), start.elapsed()),
+                        ));
+                    }
+                    if options.fail_fast {
+                        queue.state.lock().unwrap().stopped = true;
+                    }
+                }
+            }
+            if options.isolation == IsolationMode::ProcessPerTest {
+                finish_worker(&mut worker, queue);
+            }
         }
-
-        tasks_completed += 1;
-
-        // Early exit if we've done all tasks
-        if tasks_completed >= total_tasks {
-            break;
+        let mut state = queue.state.lock().unwrap();
+        state.active -= 1;
+        if serial {
+            state.serial_active = false;
         }
+        queue.changed.notify_all();
     }
-
-    worker.shutdown();
 }

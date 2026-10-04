@@ -9,7 +9,7 @@ build = "build.rs"
 
 [lib]
 name = "taut"
-crate-type = ["cdylib", "rlib"]
+crate-type = ["rlib"]
 
 [[bin]]
 name = "taut"
@@ -22,7 +22,7 @@ rustpython-parser = "0.4"
 rayon = "1.10"
 walkdir = "2"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["preserve_order"] }
 rmp-serde = "1.1"
 anyhow = "1"
 crossbeam-channel = "0.5"
@@ -33,7 +33,10 @@ notify = "8.2.0"
 regex = "1"
 toml = "0.8"
 num-traits = "0.2.19"
-pyo3 = { version = "0.27.2", features = ["extension-module"], optional = true }
+unicode-width = "0.2"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"
@@ -42,7 +45,3 @@ criterion = { version = "0.8", features = ["html_reports"] }
 [[bench]]
 name = "integration"
 harness = false
-
-[features]
-default = []
-extension-module = ["pyo3/extension-module"]

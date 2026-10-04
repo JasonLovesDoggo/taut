@@ -39,7 +39,11 @@ fn discover_files_with_test_prefixes() -> Result<()> {
 
     assert_eq!(
         rel,
-        vec!["_test_beta.py".to_string(), "test_alpha.py".to_string()]
+        vec![
+            "_test_beta.py".to_string(),
+            "not_a_test.py".to_string(),
+            "test_alpha.py".to_string()
+        ]
     );
     Ok(())
 }

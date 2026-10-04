@@ -1,94 +1,128 @@
-//! CLI argument parsing and execution.
-//!
-//! This module contains the CLI definition and entry points that can be
-//! called from both the binary and the Python extension.
+//! A single execution path for one-shot and watch runs.
 
 use crate::{cache, config, depdb, discovery, output, runner, selection};
-use anyhow::Result;
-use clap::{Parser, Subcommand};
+use anyhow::{Context, Result, bail};
+use clap::{Parser, Subcommand, ValueEnum};
 use notify::{RecursiveMode, Watcher};
-use std::path::PathBuf;
+use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[derive(Parser, Debug)]
-#[command(name = "taut", version, about = "Tests, without the overhead.")]
+#[command(
+    name = "taut",
+    version,
+    about = "Tests, without the overhead.",
+    after_help = "Common commands:\n  taut                             Run tests in the current directory\n  taut tests/test_api.py::test_get  Run one exact test ID\n  taut -k 'login*'                  Run names matching a substring/glob\n  taut list tests                  List test IDs without importing Python\n  taut watch tests                 Re-run tests when files change\n\nExit codes: 0 passed, 1 test failures, 2 usage or configuration error, 5 no tests collected."
+)]
 pub struct Args {
     #[command(subcommand)]
     pub command: Option<Commands>,
-
-    /// Path(s) to test files or directories
-    #[arg(default_value = ".")]
+    /// Test files, directories, or exact file.py::test_name IDs [default: .]
     pub paths: Vec<PathBuf>,
-
-    /// Filter tests by name substring
-    #[arg(short = 'k', long)]
-    pub filter: Option<String>,
-
-    /// Verbose output
-    #[arg(short, long)]
-    pub verbose: bool,
-
-    /// Disable parallel execution
-    #[arg(long)]
-    pub no_parallel: bool,
-
-    /// Number of parallel jobs (default: CPU count)
-    #[arg(short = 'j', long)]
-    pub jobs: Option<usize>,
-
-    /// Disable dependency caching (run all tests)
-    #[arg(long)]
-    pub no_cache: bool,
-
-    /// Execution isolation mode
-    #[arg(long, default_value = "process-per-test")]
-    pub isolation: String,
-
+    #[command(flatten)]
+    pub options: Options,
     /// Generate markdown documentation for CLI
     #[arg(long, hide = true)]
     pub markdown_help: bool,
 }
 
+#[derive(clap::Args, Debug, Default)]
+pub struct Options {
+    /// Case-insensitive name substring/glob (* and ?); no boolean expressions
+    #[arg(short = 'k', long, global = true, help_heading = "Selection")]
+    pub filter: Option<String>,
+    /// Print individual test names, timings, and full tracebacks
+    #[arg(short, long, global = true, help_heading = "Output", conflicts_with_all = ["quiet", "json"])]
+    pub verbose: bool,
+    /// Print only failures and the final summary
+    #[arg(
+        short,
+        long,
+        global = true,
+        help_heading = "Output",
+        conflicts_with = "json"
+    )]
+    pub quiet: bool,
+    /// Emit one machine-readable JSON document
+    #[arg(long, global = true, help_heading = "Output")]
+    pub json: bool,
+    /// Ignore [tool.taut] settings while preserving project discovery
+    #[arg(long, global = true, help_heading = "Execution")]
+    pub no_config: bool,
+    /// Run tests sequentially
+    #[arg(long, global = true, help_heading = "Execution")]
+    pub no_parallel: bool,
+    /// Number of worker processes [default: CPU count]
+    #[arg(short = 'j', long, global = true, help_heading = "Execution", value_parser = positive_usize)]
+    pub jobs: Option<usize>,
+    /// Run only tests affected by tracked dependency changes (enables tracing)
+    #[arg(
+        long,
+        global = true,
+        help_heading = "Selection",
+        conflicts_with = "no_cache"
+    )]
+    pub changed: bool,
+    /// Run all tests without dependency tracing (the default)
+    #[arg(long, global = true, help_heading = "Selection")]
+    pub no_cache: bool,
+    /// Worker lifetime [default: process-per-run]
+    #[arg(long, global = true, help_heading = "Execution", value_enum)]
+    pub isolation: Option<Isolation>,
+    /// Python executable or path (use `taut doctor` to inspect selection)
+    #[arg(
+        long,
+        global = true,
+        help_heading = "Execution",
+        value_name = "EXECUTABLE"
+    )]
+    pub python: Option<PathBuf>,
+    /// Async tests sharing each worker's event loop [default: 1]
+    #[arg(long, global = true, help_heading = "Execution", value_parser = positive_usize)]
+    pub async_concurrency: Option<usize>,
+    /// Per-test timeout in seconds
+    #[arg(long, global = true, help_heading = "Execution", value_parser = timeout_seconds, value_name = "SECONDS")]
+    pub timeout: Option<f64>,
+    /// Stop scheduling tests after the first failure
+    #[arg(short = 'x', long, global = true, help_heading = "Execution")]
+    pub fail_fast: bool,
+}
+
+#[derive(ValueEnum, Debug, Clone, Copy)]
+pub enum Isolation {
+    ProcessPerRun,
+    ProcessPerTest,
+}
+
+impl From<Isolation> for runner::IsolationMode {
+    fn from(value: Isolation) -> Self {
+        match value {
+            Isolation::ProcessPerRun => Self::ProcessPerRun,
+            Isolation::ProcessPerTest => Self::ProcessPerTest,
+        }
+    }
+}
+
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    /// List discovered tests without running them
+    /// List discovered tests without importing or executing Python
     List {
-        /// Path(s) to test files or directories
         #[arg(default_value = ".")]
         paths: Vec<PathBuf>,
-
-        /// Filter tests by name substring
-        #[arg(short = 'k', long)]
-        filter: Option<String>,
     },
-    /// Watch for changes and re-run affected tests
+    /// Re-run tests when Python or project configuration files change
     Watch {
-        /// Path(s) to test files or directories
         #[arg(default_value = ".")]
         paths: Vec<PathBuf>,
-
-        /// Filter tests by name substring
-        #[arg(short = 'k', long)]
-        filter: Option<String>,
-
-        /// Verbose output
-        #[arg(short, long)]
-        verbose: bool,
-
-        /// Number of parallel jobs (default: CPU count)
-        #[arg(short = 'j', long)]
-        jobs: Option<usize>,
-
-        /// Execution isolation mode
-        #[arg(long, default_value = "process-per-test")]
-        isolation: String,
-
-        /// Disable dependency caching (run all tests)
-        #[arg(long)]
-        no_cache: bool,
     },
-    /// Cache management commands
+    /// Explain project, Python and execution settings without collecting tests
+    Doctor {
+        #[arg(default_value = ".")]
+        path: PathBuf,
+    },
+    /// Manage dependency selection data
     Cache {
         #[command(subcommand)]
         action: CacheAction,
@@ -97,392 +131,627 @@ pub enum Commands {
 
 #[derive(Subcommand, Debug)]
 pub enum CacheAction {
-    /// Show cache statistics
+    /// Show dependency selection cache statistics
     Info,
-    /// Clear all cached data
+    /// Remove cached dependency selection data
     Clear,
 }
 
-/// Run the CLI with command line arguments from the environment.
-/// Returns the exit code (0 for success, 1 for failure).
-pub fn run() -> i32 {
-    let args = Args::parse();
-    run_with_parsed_args(args)
+fn positive_usize(value: &str) -> std::result::Result<usize, String> {
+    value
+        .parse::<usize>()
+        .ok()
+        .filter(|n| *n > 0)
+        .ok_or_else(|| "must be an integer greater than zero".to_owned())
 }
 
-/// Run the CLI with the given string arguments.
-/// Returns the exit code (0 for success, 1 for failure).
+fn timeout_seconds(value: &str) -> std::result::Result<f64, String> {
+    let seconds = value
+        .parse::<f64>()
+        .map_err(|_| "must be a number of seconds".to_owned())?;
+    config::parse_timeout(seconds).map_err(|e| e.to_string())?;
+    Ok(seconds)
+}
+
+pub fn run() -> i32 {
+    run_with_args(std::env::args().collect())
+}
+
 pub fn run_with_args(args: Vec<String>) -> i32 {
     match Args::try_parse_from(args) {
         Ok(args) => run_with_parsed_args(args),
-        Err(e) => {
-            eprintln!("{}", e);
-            1
+        Err(error) => {
+            let code = error.exit_code();
+            let _ = error.print();
+            code
         }
     }
 }
 
-/// Run the CLI with parsed arguments.
-/// Returns the exit code.
 fn run_with_parsed_args(args: Args) -> i32 {
-    // Handle markdown help generation
     if args.markdown_help {
-        print!("{}", clap_markdown::help_markdown::<Args>());
+        print!("{}", generate_markdown_help());
         return 0;
     }
-
     let result = match args.command {
-        Some(Commands::List { paths, filter }) => list_tests(&paths, filter.as_deref()),
-        Some(Commands::Watch {
-            paths,
-            filter,
-            verbose,
-            jobs,
-            isolation,
-            no_cache,
-        }) => watch_tests(
-            &paths,
-            filter.as_deref(),
-            verbose,
-            jobs,
-            &isolation,
-            no_cache,
-        ),
-        Some(Commands::Cache { action }) => handle_cache_command(action),
-        None => run_tests(args),
+        Some(Commands::List { paths }) => list_tests(&paths, &args.options),
+        Some(Commands::Watch { paths }) => watch_tests(&paths, &args.options),
+        Some(Commands::Doctor { path }) => doctor(&path, &args.options),
+        Some(Commands::Cache { action }) => handle_cache_command(action, args.options.json),
+        None => {
+            let paths = if args.paths.is_empty() {
+                vec![PathBuf::from(".")]
+            } else {
+                args.paths
+            };
+            execute(&paths, &args.options)
+        }
     };
-
     match result {
         Ok(code) => code,
-        Err(e) => {
-            eprintln!("Error: {}", e);
-            1
+        Err(error) => {
+            print_error(&error, args.options.json);
+            2
         }
     }
 }
 
-/// Generate markdown documentation for the CLI.
+fn print_error(error: &anyhow::Error, json: bool) {
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({"schema_version": 1, "error": format!("{error:#}")})
+        );
+    } else {
+        eprintln!("error: {error:#}");
+    }
+}
+
 pub fn generate_markdown_help() -> String {
     clap_markdown::help_markdown::<Args>()
 }
 
-fn list_tests(paths: &[PathBuf], filter: Option<&str>) -> Result<i32> {
-    let test_files = discovery::find_test_files(paths)?;
-
-    if test_files.is_empty() {
-        output::print_no_tests_found();
-        return Ok(0);
-    }
-
-    let all_tests = discovery::extract_tests(&test_files, filter)?;
-
-    if all_tests.is_empty() {
-        output::print_no_tests_found();
-        return Ok(0);
-    }
-
-    for test in &all_tests {
-        println!("{}", test.id());
-    }
-
-    println!("\n{} tests", all_tests.len());
-    Ok(0)
+fn selection_path(path: &Path) -> PathBuf {
+    path.to_str()
+        .and_then(|value| value.split_once("::"))
+        .map(|(file, _)| PathBuf::from(file))
+        .unwrap_or_else(|| path.to_path_buf())
 }
 
-fn watch_tests(
-    paths: &[PathBuf],
-    filter: Option<&str>,
-    verbose: bool,
-    jobs: Option<usize>,
-    isolation: &str,
-    no_cache: bool,
-) -> Result<i32> {
-    // Load config from pyproject.toml
-    let config = config::Config::load(&paths[0]);
-    let jobs = jobs.or(config.max_workers);
-
-    let (tx, rx) = mpsc::channel();
-
-    let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
-        if let Ok(event) = res {
-            if event.kind.is_modify() || event.kind.is_create() || event.kind.is_remove() {
-                let _ = tx.send(event);
-            }
-        }
-    })?;
-
-    // Watch all provided paths
+fn validate_paths(paths: &[PathBuf]) -> Result<()> {
     for path in paths {
-        let watch_path = if path.is_file() {
-            path.parent().unwrap_or(path)
-        } else {
-            path.as_path()
-        };
-        watcher.watch(watch_path, RecursiveMode::Recursive)?;
-    }
-
-    println!("Watching for changes... (Ctrl+C to stop)\n");
-
-    // Initial run
-    run_tests_for_watch(paths, filter, verbose, jobs, isolation, no_cache);
-
-    // Debounce: wait for events to settle
-    loop {
-        match rx.recv() {
-            Ok(event) => {
-                // Collect changed Python files
-                let changed: Vec<_> = event
-                    .paths
-                    .iter()
-                    .filter(|p| p.extension().map(|e| e == "py").unwrap_or(false))
-                    .collect();
-
-                if !changed.is_empty() {
-                    // Drain any pending events (debounce)
-                    std::thread::sleep(Duration::from_millis(100));
-                    while rx.try_recv().is_ok() {}
-
-                    // Show changed files
-                    for path in &changed {
-                        println!("changed: {}", path.display());
-                    }
-                    println!();
-
-                    run_tests_for_watch(paths, filter, verbose, jobs, isolation, no_cache);
-                }
-            }
-            Err(_) => break,
+        if !selection_path(path).exists() {
+            bail!(
+                "test path does not exist: {}",
+                selection_path(path).display()
+            );
         }
     }
+    Ok(())
+}
 
+struct Collection {
+    tests: Vec<discovery::TestItem>,
+    before_filter: usize,
+}
+
+fn collect(paths: &[PathBuf], options: &Options) -> Result<Collection> {
+    validate_paths(paths)?;
+    let mut tests = discovery::collect_tests(paths, None)?;
+    let before_filter = tests.len();
+    discovery::apply_filter(&mut tests, options.filter.as_deref())?;
+    Ok(Collection {
+        tests,
+        before_filter,
+    })
+}
+
+fn print_empty_collection(paths: &[PathBuf], options: &Options, before_filter: usize) {
+    if let Some(pattern) = options.filter.as_deref().filter(|_| before_filter > 0) {
+        println!("No tests matched filter {pattern:?} ({before_filter} tests before filtering).");
+        println!("-k matches a case-insensitive name substring/glob, not a boolean expression.");
+    } else {
+        println!("No tests discovered.");
+        println!(
+            "Directory discovery uses test_*.py, _test*.py, or *_test.py files and test_* or _test* functions."
+        );
+        println!("Pass a Python file explicitly to inspect other filenames.");
+    }
+    println!(
+        "Searched: {}",
+        paths
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    println!(
+        "List available test IDs: {}",
+        discovery::list_command(paths)
+    );
+}
+
+fn list_tests(paths: &[PathBuf], options: &Options) -> Result<i32> {
+    validate_paths(paths)?;
+    config::Config::load_project(&selection_path(&paths[0]), options.no_config)?;
+    let Collection {
+        tests,
+        before_filter,
+    } = collect(paths, options)?;
+    if options.json {
+        println!(
+            "{}",
+            serde_json::json!({"schema_version": 1, "tests": tests.iter().map(|t| t.id()).collect::<Vec<_>>(), "collected": tests.len()})
+        );
+    } else if tests.is_empty() {
+        print_empty_collection(paths, options, before_filter);
+    } else {
+        for test in &tests {
+            println!("{}", test.id());
+        }
+        if !options.quiet {
+            println!("\n{} tests", tests.len());
+        }
+    }
+    Ok(if tests.is_empty() { 5 } else { 0 })
+}
+
+fn runner_options(options: &Options, config: config::Config) -> Result<runner::RunOptions> {
+    let isolation = options.isolation.map(Into::into).unwrap_or_else(|| {
+        runner::IsolationMode::parse(config.isolation.as_deref().unwrap_or("process-per-run"))
+    });
+    let async_concurrency = options
+        .async_concurrency
+        .or(config.async_concurrency)
+        .unwrap_or(1);
+    if options.no_parallel && async_concurrency > 1 {
+        bail!("--no-parallel requires --async-concurrency 1");
+    }
+    if matches!(isolation, runner::IsolationMode::ProcessPerTest) && async_concurrency > 1 {
+        bail!(
+            "--async-concurrency greater than 1 requires --isolation process-per-run; isolated tests cannot share an event loop"
+        );
+    }
+    let python = options.python.clone().or(config.python);
+    if python.as_ref().is_some_and(|p| p.as_os_str().is_empty()) {
+        bail!("--python must name an interpreter or executable path");
+    }
+    Ok(runner::RunOptions {
+        parallel: !options.no_parallel,
+        jobs: options.jobs.or(config.max_workers),
+        collect_coverage: options.changed,
+        isolation,
+        python,
+        async_concurrency,
+        timeout: options
+            .timeout
+            .or(config.timeout)
+            .map(config::parse_timeout)
+            .transpose()?,
+        fail_fast: options.fail_fast || config.fail_fast,
+    })
+}
+
+struct ExecutionSetup {
+    project_root: PathBuf,
+    config_path: Option<PathBuf>,
+    python: crate::python::Python,
+    runtime: runner::RunOptions,
+}
+
+impl ExecutionSetup {
+    fn resolve_python(mut self) -> Result<Self> {
+        self.python = self.python.resolve()?;
+        self.runtime.python = Some(self.python.path.clone());
+        Ok(self)
+    }
+}
+
+/// One setup path for execution, watch validation, changed selection and doctor.
+fn execution_setup(paths: &[PathBuf], options: &Options) -> Result<ExecutionSetup> {
+    validate_paths(paths)?;
+    let project = config::Config::load_project(&selection_path(&paths[0]), options.no_config)?;
+    let mut runtime = runner_options(options, project.options)?;
+    let explicit = runtime.python.take().map(|path| {
+        let source = if options.python.is_some() {
+            crate::python::Source::Cli
+        } else {
+            crate::python::Source::Config
+        };
+        (path, source)
+    });
+    let python = crate::python::select(explicit, &project.root);
+    Ok(ExecutionSetup {
+        project_root: project.root,
+        config_path: project.path,
+        python,
+        runtime,
+    })
+}
+
+fn doctor(path: &Path, options: &Options) -> Result<i32> {
+    let setup = execution_setup(&[path.to_path_buf()], options)?.resolve_python()?;
+    let version = crate::worker_pool::python_version(&setup.python.path)?;
+    let runtime = &setup.runtime;
+    let isolation = match runtime.isolation {
+        runner::IsolationMode::ProcessPerRun => "process-per-run",
+        runner::IsolationMode::ProcessPerTest => "process-per-test",
+    };
+    let execution = serde_json::json!({
+        "parallel": runtime.parallel,
+        "jobs": runtime.worker_count(),
+        "isolation": isolation,
+        "async_concurrency": runtime.async_concurrency,
+        "timeout_seconds": runtime.timeout.map(|timeout| timeout.as_secs_f64()),
+        "fail_fast": runtime.fail_fast,
+        "changed": runtime.collect_coverage,
+        "filter": options.filter,
+    });
+    if options.json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "schema_version": 1,
+                "project": {"root": setup.project_root, "config_path": setup.config_path, "config_ignored": options.no_config},
+                "python": {"path": setup.python.path, "source": setup.python.source, "version": version},
+                "execution": execution,
+            })
+        );
+    } else {
+        println!("Project: {}", setup.project_root.display());
+        println!(
+            "Configuration: {}{}",
+            setup
+                .config_path
+                .as_ref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "none (defaults)".to_owned()),
+            if options.no_config && setup.config_path.is_some() {
+                " (ignored by --no-config)"
+            } else {
+                ""
+            }
+        );
+        println!("Python: {}", setup.python.path.display());
+        println!("Python source: {}", setup.python.source.label());
+        println!("Python version: {version}");
+        println!(
+            "Workers: {} ({})",
+            runtime.worker_count(),
+            if runtime.parallel {
+                "parallel"
+            } else {
+                "sequential"
+            }
+        );
+        println!("Async concurrency: {}", runtime.async_concurrency);
+        println!("Isolation: {isolation}");
+        println!(
+            "Timeout: {}",
+            runtime
+                .timeout
+                .map(|timeout| format!("{} seconds", timeout.as_secs_f64()))
+                .unwrap_or_else(|| "none".to_owned())
+        );
+        println!(
+            "Selection: {}",
+            if runtime.collect_coverage {
+                "changed tests"
+            } else {
+                "all tests"
+            }
+        );
+        if let Some(filter) = &options.filter {
+            println!("Filter: {filter}");
+        }
+        println!("Fail fast: {}", runtime.fail_fast);
+    }
     Ok(0)
 }
 
-fn run_tests_for_watch(
-    paths: &[PathBuf],
-    filter: Option<&str>,
-    verbose: bool,
-    jobs: Option<usize>,
-    isolation: &str,
-    no_cache: bool,
-) {
-    let test_files = match discovery::find_test_files(paths) {
-        Ok(f) => f,
-        Err(e) => {
-            eprintln!("Error discovering tests: {}", e);
-            return;
-        }
-    };
+fn execution_context(options: &runner::RunOptions, python: Option<&Path>) -> String {
+    let fingerprint = python
+        .and_then(|python| {
+            let canonical = python.canonicalize().ok()?;
+            let metadata = canonical.metadata().ok()?;
+            let modified = metadata.modified().ok()?;
+            Some(format!(
+                "lexical={python:?};canonical={canonical:?};size={};modified={modified:?}",
+                metadata.len()
+            ))
+        })
+        .unwrap_or_else(|| {
+            // Never certify cached success when the interpreter cannot be inspected.
+            static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            format!(
+                "unavailable:{:?}:{}:{}",
+                std::time::SystemTime::now(),
+                std::process::id(),
+                SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            )
+        });
+    format!(
+        "python={fingerprint};isolation={:?};parallel={};jobs={:?};async={};timeout={:?};fail_fast={}",
+        options.isolation,
+        options.parallel,
+        options.jobs,
+        options.async_concurrency,
+        options.timeout,
+        options.fail_fast
+    )
+}
 
-    if test_files.is_empty() {
-        output::print_no_tests_found();
-        return;
-    }
-
-    let all_tests = match discovery::extract_tests(&test_files, filter) {
-        Ok(t) => t,
-        Err(e) => {
-            eprintln!("Error extracting tests: {}", e);
-            return;
-        }
-    };
-
+fn execute(paths: &[PathBuf], options: &Options) -> Result<i32> {
+    let started = Instant::now();
+    let setup = execution_setup(paths, options)?;
+    let Collection {
+        tests: all_tests,
+        before_filter,
+    } = collect(paths, options)?;
     if all_tests.is_empty() {
-        output::print_no_tests_found();
-        return;
+        if options.json {
+            output::print_json(
+                &runner::TestResults {
+                    results: Vec::new(),
+                    total_duration: started.elapsed(),
+                },
+                0,
+                &[],
+            );
+        } else {
+            print_empty_collection(paths, options, before_filter);
+        }
+        return Ok(5);
     }
-
-    let mut selector = selection::TestSelector::new();
-    selector.index_files(paths);
-
-    let (tests_to_run, skipped_tests) = if no_cache {
-        (all_tests.clone(), Vec::new())
-    } else {
-        let selection = selector.select_tests(&all_tests);
-        let to_run: Vec<_> = selection.to_run.into_iter().map(|(item, _)| item).collect();
-        let skipped: Vec<_> = selection
+    // Empty selections and static collection errors do not require Python.
+    let setup = setup.resolve_python()?;
+    let runtime = setup.runtime;
+    let collected = all_tests.len();
+    // Normal runs never instantiate the selector or parse unrelated source files.
+    let mut selector = options.changed.then(selection::TestSelector::new);
+    if let Some(selector) = &mut selector {
+        selector.set_python_environment(&setup.python.path);
+        selector.set_execution_context(&execution_context(&runtime, Some(&setup.python.path)));
+    }
+    let mut selected_out = Vec::new();
+    // Decorator spelling is not proof of skip semantics. Runtime metadata decides.
+    let mut runnable = all_tests;
+    if let Some(selector) = &mut selector {
+        selector.index_files(
+            &paths
+                .iter()
+                .map(|path| selection_path(path))
+                .collect::<Vec<_>>(),
+        );
+        let selection = selector.select_tests(&runnable);
+        runnable = selection.to_run.into_iter().map(|(test, _)| test).collect();
+        selected_out = selection
             .to_skip
             .into_iter()
-            .map(|(item, reason)| runner::skipped_result(&item, &reason))
+            .map(|(test, _)| test.id())
             .collect();
-        (to_run, skipped)
-    };
-
-    let printer = output::ProgressPrinter::new(verbose);
-
-    for result in &skipped_tests {
-        printer.print_result(result);
     }
-
-    let collect_coverage = !no_cache;
-    let run_results = match runner::run_tests(
-        &tests_to_run,
-        true,
-        jobs,
-        collect_coverage,
-        runner::IsolationMode::parse(isolation),
-        |result| printer.print_result(result),
-    ) {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("Error running tests: {}", e);
-            return;
-        }
-    };
-
-    if !no_cache {
-        for result in &run_results.results {
+    let printer =
+        output::ProgressPrinter::with_options(options.verbose, options.quiet || options.json);
+    let run =
+        runner::run_tests_with_options(&runnable, &runtime, |result| printer.print_result(result))?;
+    if let Some(selector) = &mut selector {
+        for result in &run.results {
             selector.record_result(result);
         }
         selector.save();
     }
-
-    let mut all_results = skipped_tests;
-    all_results.extend(run_results.results);
-
-    let combined = runner::TestResults {
-        results: all_results,
-        total_duration: run_results.total_duration,
+    let results = runner::TestResults {
+        results: run.results,
+        total_duration: started.elapsed(),
     };
-
-    let failed_tests = printer.get_failed_tests();
-    output::print_summary(&combined, &failed_tests);
+    if options.json {
+        output::print_json(&results, collected, &selected_out);
+    } else {
+        output::print_run_summary_with_options(
+            &results,
+            collected,
+            selected_out.len(),
+            &output::SummaryOptions {
+                quiet: options.quiet,
+                verbose: options.verbose,
+                runtime: Some(&runtime),
+                // Launcher-provided interpreters may be temporary (uv --with).
+                // Repeating the same launcher context must select its new path.
+                rerun_python: (!matches!(
+                    setup.python.source,
+                    crate::python::Source::VirtualEnv | crate::python::Source::TautPython
+                ))
+                .then_some(setup.python.path.as_path()),
+            },
+        );
+    }
+    Ok(if results.all_passed() { 0 } else { 1 })
 }
 
-fn handle_cache_command(action: CacheAction) -> Result<i32> {
+fn watch_tests(paths: &[PathBuf], options: &Options) -> Result<i32> {
+    // Validate configuration before starting a watch session; collection may be empty.
+    execution_setup(paths, options)?;
+    let (tx, rx) = mpsc::channel();
+    let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+        let _ = tx.send(event);
+    })?;
+    let roots: BTreeSet<_> = paths
+        .iter()
+        .map(|path| crate::project::root(&selection_path(path)))
+        .collect();
+    let watch_roots: Vec<_> = roots
+        .iter()
+        .filter(|path| {
+            !roots
+                .iter()
+                .any(|other| other != *path && path.starts_with(other))
+        })
+        .collect();
+    for path in watch_roots {
+        watcher.watch(path, RecursiveMode::Recursive)?;
+    }
+    if !options.json && !options.quiet {
+        eprintln!("Watching for changes... (Ctrl+C to stop)");
+    }
+    if let Err(error) = execute(paths, options) {
+        print_error(&error, options.json);
+    }
+    loop {
+        let first = rx.recv().context("filesystem watcher disconnected")??;
+        let mut changed = BTreeSet::new();
+        record_changes(first, &mut changed);
+        // Reset the short debounce window for every arriving event.
+        while let Ok(event) = rx.recv_timeout(Duration::from_millis(100)) {
+            record_changes(event?, &mut changed);
+        }
+        if changed.is_empty() {
+            continue;
+        }
+        if !options.json && !options.quiet {
+            for path in changed {
+                eprintln!("changed: {}", path.display());
+            }
+        }
+        if let Err(error) = execute(paths, options) {
+            print_error(&error, options.json);
+        }
+    }
+}
+
+fn record_changes(event: notify::Event, paths: &mut BTreeSet<PathBuf>) {
+    if !(event.kind.is_modify() || event.kind.is_create() || event.kind.is_remove()) {
+        return;
+    }
+    paths.extend(event.paths.into_iter().filter(|path| watch_relevant(path)));
+}
+
+fn watch_relevant(path: &Path) -> bool {
+    !path.components().any(|component| {
+        matches!(
+            component.as_os_str().to_str(),
+            Some(
+                ".git"
+                    | ".venv"
+                    | "venv"
+                    | "__pycache__"
+                    | ".taut"
+                    | ".tox"
+                    | ".nox"
+                    | "node_modules"
+                    | "target"
+                    | "build"
+                    | "dist"
+            )
+        )
+    }) && (path.extension().is_some_and(|ext| ext == "py")
+        || crate::project::is_configuration(path))
+}
+
+fn handle_cache_command(action: CacheAction, json: bool) -> Result<i32> {
     match action {
         CacheAction::Info => {
-            let cache_stats = cache::get_cache_stats();
-            let depdb_stats = depdb::DependencyDatabase::load().stats();
-
-            println!("Cache location: {}", cache_stats.cache_dir.display());
-            println!("Cache exists: {}", cache_stats.exists);
-
-            if cache_stats.exists {
-                let size_kb = cache_stats.size_bytes as f64 / 1024.0;
+            let cache = cache::get_cache_stats();
+            let dependencies = depdb::DependencyDatabase::load().stats();
+            if json {
                 println!(
-                    "Total size: {:.1} KB ({} files)",
-                    size_kb, cache_stats.file_count
+                    "{}",
+                    serde_json::json!({"schema_version": 1, "cache": {"path": cache.cache_dir, "exists": cache.exists, "size_bytes": cache.size_bytes, "files": cache.file_count, "blocks": dependencies.total_blocks, "tests": dependencies.total_tests}})
                 );
-                println!();
-                println!("Dependency database:");
-                println!("  {} blocks tracked", depdb_stats.total_blocks);
-                println!("  {} tests tracked", depdb_stats.total_tests);
-                println!(
-                    "  {} passed, {} failed",
-                    depdb_stats.passed_tests, depdb_stats.failed_tests
-                );
+                return Ok(0);
             }
+            println!("Cache location: {}", cache.cache_dir.display());
+            println!("Cache exists: {}", cache.exists);
+            println!(
+                "Total size: {:.1} KB ({} files)",
+                cache.size_bytes as f64 / 1024.0,
+                cache.file_count
+            );
+            println!(
+                "{} blocks tracked, {} tests tracked",
+                dependencies.total_blocks, dependencies.total_tests
+            );
         }
         CacheAction::Clear => {
-            let (size_bytes, file_count) = cache::clear_cache()?;
-            if file_count > 0 {
-                let size_kb = size_bytes as f64 / 1024.0;
-                println!("Cache cleared: {:.1} KB ({} files)", size_kb, file_count);
-            } else {
+            let (bytes, files) = cache::clear_cache()?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({"schema_version": 1, "cleared_bytes": bytes, "cleared_files": files})
+                );
+            } else if files == 0 {
                 println!("Cache already empty.");
+            } else {
+                println!(
+                    "Cache cleared: {:.1} KB ({} files)",
+                    bytes as f64 / 1024.0,
+                    files
+                );
             }
         }
     }
     Ok(0)
 }
 
-fn run_tests(args: Args) -> Result<i32> {
-    // Load config from pyproject.toml
-    let config = config::Config::load(&args.paths[0]);
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    // Resolve jobs: CLI flag > pyproject.toml > None (will use CPU count)
-    let jobs = args.jobs.or(config.max_workers);
-
-    // 1. Discover test files
-    let test_files = discovery::find_test_files(&args.paths)?;
-
-    if test_files.is_empty() {
-        output::print_no_tests_found();
-        return Ok(0);
+    #[test]
+    fn global_options_are_accepted_after_subcommands() {
+        let args = Args::try_parse_from([
+            "taut",
+            "watch",
+            "tests",
+            "--python",
+            "python3.13",
+            "--async-concurrency",
+            "8",
+            "--no-config",
+            "-x",
+            "-j",
+            "2",
+        ])
+        .unwrap();
+        assert_eq!(args.options.jobs, Some(2));
+        assert_eq!(args.options.async_concurrency, Some(8));
+        assert!(args.options.fail_fast);
+        assert!(args.options.no_config);
     }
 
-    // 2. Parse and extract test items
-    let all_tests = discovery::extract_tests(&test_files, args.filter.as_deref())?;
-
-    if all_tests.is_empty() {
-        output::print_no_tests_found();
-        return Ok(0);
-    }
-
-    // 3. Set up test selector for dependency tracking
-    let mut selector = selection::TestSelector::new();
-
-    // Index all Python files in the search paths for coverage mapping
-    selector.index_files(&args.paths);
-
-    // 4. Determine which tests to run (handle @skip markers first)
-    let (mut tests_to_run, mut skipped_tests): (Vec<_>, Vec<_>) = if args.no_cache {
-        // Run everything without caching, but still respect @skip markers
-        (all_tests.clone(), Vec::new())
-    } else {
-        let selection = selector.select_tests(&all_tests);
-        let to_run: Vec<_> = selection.to_run.into_iter().map(|(item, _)| item).collect();
-        let skipped: Vec<_> = selection
-            .to_skip
-            .into_iter()
-            .map(|(item, reason)| runner::skipped_result(&item, &reason))
-            .collect();
-        (to_run, skipped)
-    };
-
-    // Handle @skip markers - move skipped tests to skipped_tests
-    let (marker_skipped, remaining): (Vec<_>, Vec<_>) =
-        tests_to_run.into_iter().partition(|item| item.is_skipped());
-
-    tests_to_run = remaining;
-    skipped_tests.extend(marker_skipped.into_iter().map(|item| {
-        let reason = item
-            .skip_reason()
-            .unwrap_or_else(|| "marked with @skip".to_string());
-        runner::skipped_result(&item, &reason)
-    }));
-
-    // 5. Run tests with streaming output
-    let printer = output::ProgressPrinter::new(args.verbose);
-
-    // Print skipped tests first
-    for result in &skipped_tests {
-        printer.print_result(result);
-    }
-
-    // Run actual tests with coverage collection (when caching enabled)
-    let collect_coverage = !args.no_cache;
-    let run_results = runner::run_tests(
-        &tests_to_run,
-        !args.no_parallel,
-        jobs,
-        collect_coverage,
-        runner::IsolationMode::parse(&args.isolation),
-        |result| printer.print_result(result),
-    )?;
-
-    // 6. Record coverage for dependency tracking
-    if !args.no_cache {
-        for result in &run_results.results {
-            selector.record_result(result);
+    #[test]
+    fn invalid_flags_are_usage_errors() {
+        for args in [
+            vec!["taut", "-j", "0"],
+            vec!["taut", "--async-concurrency", "0"],
+            vec!["taut", "--isolation", "typo"],
+            vec!["taut", "--timeout", "nan"],
+            vec!["taut", "--timeout", "0"],
+            vec!["taut", "--changed", "--no-cache"],
+        ] {
+            assert_eq!(Args::try_parse_from(args).unwrap_err().exit_code(), 2);
         }
-        selector.save();
     }
 
-    // 7. Combine results
-    let mut all_results = skipped_tests;
-    all_results.extend(run_results.results);
+    #[test]
+    fn help_and_version_are_successful() {
+        for flag in ["--help", "--version"] {
+            assert_eq!(
+                Args::try_parse_from(["taut", flag])
+                    .unwrap_err()
+                    .exit_code(),
+                0
+            );
+        }
+    }
 
-    let combined = runner::TestResults {
-        results: all_results,
-        total_duration: run_results.total_duration,
-    };
-
-    // 8. Print summary
-    let failed_tests = printer.get_failed_tests();
-    output::print_summary(&combined, &failed_tests);
-
-    // 9. Return exit code
-    Ok(if combined.all_passed() { 0 } else { 1 })
+    #[test]
+    fn watch_ignores_generated_python_files() {
+        assert!(watch_relevant(Path::new("src/example.py")));
+        for configuration in ["pyproject.toml", "pytest.ini", "setup.cfg", "setup.py"] {
+            assert!(watch_relevant(Path::new(configuration)));
+        }
+        assert!(!watch_relevant(Path::new(".venv/lib/test_fake.py")));
+        assert!(!watch_relevant(Path::new("__pycache__/test.py")));
+    }
 }

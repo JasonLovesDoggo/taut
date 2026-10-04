@@ -3,6 +3,9 @@
 //! Provides utilities similar to pytest's `pytester` fixture for creating
 //! temporary test projects, running taut, and asserting on results.
 
+// Each integration-test crate imports the subset of these shared helpers it needs.
+#![allow(dead_code)]
+
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -210,35 +213,9 @@ pub fn run_taut_in_dir(dir: &Path, args: &[&str]) -> Result<TautResult> {
 
 /// Find the taut binary in target directory.
 fn find_taut_binary() -> Result<PathBuf> {
-    // Try debug build first, then release
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
-    let manifest_path = PathBuf::from(manifest_dir);
-
-    let debug_path = manifest_path.join("target/debug/taut");
-    if debug_path.exists() {
-        return Ok(debug_path);
-    }
-
-    let release_path = manifest_path.join("target/release/taut");
-    if release_path.exists() {
-        return Ok(release_path);
-    }
-
-    // Try current directory
-    let debug_path = PathBuf::from("target/debug/taut");
-    if debug_path.exists() {
-        return Ok(debug_path);
-    }
-
-    let release_path = PathBuf::from("target/release/taut");
-    if release_path.exists() {
-        return Ok(release_path);
-    }
-
-    anyhow::bail!(
-        "Could not find taut binary. Run `cargo build` first. \
-        Searched: target/debug/taut, target/release/taut"
-    )
+    // Cargo supplies the binary built for this exact test invocation, including
+    // custom target directories and release tests. Never select a stale build.
+    Ok(PathBuf::from(env!("CARGO_BIN_EXE_taut")))
 }
 
 /// Remove common leading whitespace from a string (dedent).

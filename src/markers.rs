@@ -48,25 +48,44 @@ impl std::fmt::Display for MarkerValue {
     }
 }
 
-/// Extract markers from a function's decorator list.
+/// Extract and normalize decorators. Python applies the outermost decorator
+/// last, so its explicit values take precedence over decorators below it.
 pub fn extract_markers(decorators: &[ast::Expr]) -> Vec<Marker> {
-    decorators.iter().filter_map(parse_decorator).collect()
+    let mut markers = Vec::new();
+    for marker in decorators.iter().filter_map(parse_decorator) {
+        inherit_marker(&mut markers, marker);
+    }
+    markers
 }
 
-/// Extract markers from a class's decorator list (for @parallel on class).
+/// Class markers supply defaults for every collected method, including skip,
+/// serial scheduling, and arbitrary mark metadata.
 pub fn extract_class_markers(decorators: &[ast::Expr]) -> Vec<Marker> {
-    decorators
-        .iter()
-        .filter_map(|d| {
-            let marker = parse_decorator(d)?;
-            // Only @parallel is valid on classes
-            if marker.name == "parallel" {
-                Some(marker)
-            } else {
-                None
-            }
-        })
-        .collect()
+    extract_markers(decorators)
+}
+
+/// Fill missing marker fields from a lower-priority class or base. Existing
+/// explicit values, including `False`, win; unrelated keyword keys are retained.
+pub fn inherit_markers(markers: &mut Vec<Marker>, inherited: &[Marker]) {
+    for marker in inherited {
+        inherit_marker(markers, marker.clone());
+    }
+}
+
+fn inherit_marker(markers: &mut Vec<Marker>, marker: Marker) {
+    if let Some(existing) = markers
+        .iter_mut()
+        .find(|existing| existing.name == marker.name)
+    {
+        if existing.args.reason.is_none() {
+            existing.args.reason = marker.args.reason;
+        }
+        for (key, value) in marker.args.kwargs {
+            existing.args.kwargs.entry(key).or_insert(value);
+        }
+    } else {
+        markers.push(marker);
+    }
 }
 
 /// Check if a test has the @skip marker.
@@ -130,7 +149,7 @@ fn parse_decorator(decorator: &ast::Expr) -> Option<Marker> {
         }
 
         // @skip("reason"), @mark(slow=True), @parallel()
-        ast::Expr::Call(call) => parse_call_decorator(&call),
+        ast::Expr::Call(call) => parse_call_decorator(call),
 
         // @taut.skip, @taut.parallel, etc. (attribute access)
         ast::Expr::Attribute(attr) => {
@@ -164,24 +183,24 @@ fn parse_call_decorator(call: &ast::ExprCall) -> Option<Marker> {
     let mut args = MarkerArgs::default();
 
     // Parse positional arguments (mainly for @skip("reason"))
-    if let Some(first_arg) = call.args.first() {
-        if let Some(value) = expr_to_string(first_arg) {
-            args.reason = Some(value);
-        }
+    if let Some(first_arg) = call.args.first()
+        && let Some(value) = expr_to_string(first_arg)
+    {
+        args.reason = Some(value);
     }
 
     // Parse keyword arguments
     for keyword in &call.keywords {
-        if let Some(ref arg_name) = keyword.arg {
-            if let Some(value) = expr_to_marker_value(&keyword.value) {
-                // Handle reason= for skip
-                if arg_name.as_str() == "reason" {
-                    if let MarkerValue::String(s) = &value {
-                        args.reason = Some(s.clone());
-                    }
-                } else {
-                    args.kwargs.insert(arg_name.to_string(), value);
+        if let Some(ref arg_name) = keyword.arg
+            && let Some(value) = expr_to_marker_value(&keyword.value)
+        {
+            // Handle reason= for skip
+            if arg_name.as_str() == "reason" {
+                if let MarkerValue::String(s) = &value {
+                    args.reason = Some(s.clone());
                 }
+            } else {
+                args.kwargs.insert(arg_name.to_string(), value);
             }
         }
     }

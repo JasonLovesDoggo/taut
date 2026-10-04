@@ -5,7 +5,7 @@
 //! - Decides which tests need to re-run based on changes
 //! - Handles cache persistence and invalidation
 //!
-//! Several tests document bugs that need fixing.
+//! Passing results are reusable only for the exact source snapshot.
 
 mod helpers;
 
@@ -185,16 +185,13 @@ fn changed_dependency_reruns() -> Result<()> {
 }
 
 // =============================================================================
-// BUG: Line Number Fragility
+// Exact-source invalidation
 // =============================================================================
 
 #[test]
-fn adding_blank_line_should_not_invalidate_cache() -> Result<()> {
-    // CRITICAL BUG: Currently, BlockId includes start_line and end_line.
-    // When a blank line is added above a function, the line numbers change,
-    // which changes the BlockId key, which causes DependencyDeleted.
-    //
-    // This test will FAIL until fixed.
+fn adding_blank_line_invalidates_exact_source_snapshot() -> Result<()> {
+    // Byte-level snapshots deliberately rerun after edits, including line
+    // shifts. Retaining old block identities must never hide an actual change.
 
     let tmp = TempDir::new()?;
     let test_file = tmp.path().join("test_foo.py");
@@ -237,7 +234,7 @@ fn adding_blank_line_should_not_invalidate_cache() -> Result<()> {
         "Test should skip initially"
     );
 
-    // Version 2: add blank line above helper (NO CODE CHANGE)
+    // Version 2: insert a real leading blank line after dedenting.
     let code_v2 = &dedent(
         r#"
 
@@ -248,7 +245,7 @@ fn adding_blank_line_should_not_invalidate_cache() -> Result<()> {
             assert helper() == 1
     "#,
     );
-    fs::write(&test_file, code_v2)?;
+    fs::write(&test_file, format!("\n{code_v2}"))?;
 
     let file_blocks_v2 = FileBlocks::from_file(&test_file)?;
     depdb.update_blocks(&file_blocks_v2);
@@ -264,11 +261,9 @@ fn adding_blank_line_should_not_invalidate_cache() -> Result<()> {
 
     let decision = depdb.needs_run(&test_v2);
 
-    // BUG: Currently returns DependencyDeleted because the BlockId key changed
-    // SHOULD return CanSkip because no actual code changed
     assert!(
-        matches!(decision, TestRunDecision::CanSkip),
-        "BUG: Adding blank line should NOT invalidate cache. Got {:?}",
+        matches!(decision, TestRunDecision::DependencyChanged),
+        "Exact source snapshot should notice inserted lines. Got {:?}",
         decision
     );
 
@@ -276,8 +271,8 @@ fn adding_blank_line_should_not_invalidate_cache() -> Result<()> {
 }
 
 #[test]
-fn adding_comment_should_not_invalidate_cache() -> Result<()> {
-    // Similar bug: adding a comment changes line numbers
+fn adding_comment_invalidates_exact_source_snapshot() -> Result<()> {
+    // Comments are source bytes too; no unsafe Python normalization.
 
     let tmp = TempDir::new()?;
     let test_file = tmp.path().join("test_foo.py");
@@ -323,8 +318,8 @@ fn adding_comment_should_not_invalidate_cache() -> Result<()> {
     let decision = depdb.needs_run(&test_v2);
 
     assert!(
-        matches!(decision, TestRunDecision::CanSkip),
-        "BUG: Adding comment should NOT invalidate cache. Got {:?}",
+        matches!(decision, TestRunDecision::DependencyChanged),
+        "Exact source snapshot should notice inserted comments. Got {:?}",
         decision
     );
 
@@ -332,9 +327,8 @@ fn adding_comment_should_not_invalidate_cache() -> Result<()> {
 }
 
 #[test]
-fn reordering_functions_with_same_content_should_not_invalidate() -> Result<()> {
-    // If we move a function but don't change its content,
-    // tests depending on it should not re-run.
+fn reordering_functions_invalidates_exact_source_snapshot() -> Result<()> {
+    // Definition order can change module execution and decorator behavior.
 
     let tmp = TempDir::new()?;
     let test_file = tmp.path().join("test_foo.py");
@@ -401,11 +395,9 @@ fn reordering_functions_with_same_content_should_not_invalidate() -> Result<()> 
 
     let decision = depdb.needs_run(&test_v2);
 
-    // The content of helper_a didn't change, just its position
-    // Ideally this should skip, but with line-based BlockId it won't
     assert!(
-        matches!(decision, TestRunDecision::CanSkip),
-        "BUG: Reordering functions should NOT invalidate cache if content unchanged. Got {:?}",
+        matches!(decision, TestRunDecision::DependencyChanged),
+        "Reordering definitions can change import semantics and must invalidate. Got {:?}",
         decision
     );
 
@@ -595,27 +587,33 @@ fn same_method_name_different_classes() -> Result<()> {
 
 #[test]
 fn save_and_load_roundtrip() -> Result<()> {
-    // This test requires setting up a temp cache directory
-    // For now, just verify the basic API works
-
-    let mut depdb = DependencyDatabase::default();
-
-    // Add some data
+    let tmp = TempDir::new()?;
+    let file = tmp.path().join("test_foo.py");
+    fs::write(&file, "def test_ok(): pass\n")?;
     let test = TestItem {
-        file: PathBuf::from("/tmp/test_foo.py"),
+        file: file.clone(),
         function: "test_ok".to_string(),
         class: None,
         line: 1,
         markers: vec![],
     };
-
-    let block_index = HashMap::new();
-    depdb.record_test_coverage(&test, &HashMap::new(), true, &block_index);
-
-    // Save and load would normally persist to disk
-    // Just verify it doesn't panic
-    depdb.save();
-
+    let mut db = DependencyDatabase::default();
+    db.update_blocks(&FileBlocks::from_file(&file)?);
+    db.record_test_coverage(
+        &test,
+        &HashMap::from([(file.clone(), vec![1])]),
+        true,
+        &HashMap::new(),
+    );
+    let serialized = serde_json::to_vec(&db)?;
+    let mut restored: DependencyDatabase = serde_json::from_slice(&serialized)?;
+    // Deserialization must not trust stale source state; reindex before reuse.
+    assert!(restored.needs_run(&test).should_run());
+    restored.update_blocks(&FileBlocks::from_file(&file)?);
+    assert!(matches!(
+        restored.needs_run(&test),
+        TestRunDecision::CanSkip
+    ));
     Ok(())
 }
 
@@ -662,7 +660,7 @@ fn stats_accurate() -> Result<()> {
 // =============================================================================
 
 #[test]
-fn coverage_for_file_not_in_block_index_ignored() -> Result<()> {
+fn unreadable_coverage_requires_rerun() -> Result<()> {
     let tmp = TempDir::new()?;
     let test_file = tmp.path().join("test_foo.py");
     fs::write(&test_file, "def test_ok(): pass\n")?;
@@ -685,8 +683,7 @@ fn coverage_for_file_not_in_block_index_ignored() -> Result<()> {
     coverage.insert(PathBuf::from("/some/other/file.py"), vec![1, 2, 3]);
     depdb.record_test_coverage(&test, &coverage, true, &block_index);
 
-    // Should not panic, and test should be recorded as passed
-    // But with no dependencies tracked
+    assert!(depdb.needs_run(&test).should_run());
     let stats = depdb.stats();
     assert_eq!(stats.total_tests, 1);
 

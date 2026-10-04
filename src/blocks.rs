@@ -34,6 +34,8 @@ pub struct Block {
 pub struct FileBlocks {
     pub file: PathBuf,
     pub blocks: Vec<Block>,
+    /// Fingerprint of exact source bytes for conservative cache invalidation.
+    pub source_checksum: String,
     pub line_to_block: HashMap<usize, usize>, // line_number -> block index
 }
 
@@ -67,6 +69,7 @@ impl FileBlocks {
         Ok(Self {
             file: path.to_path_buf(),
             blocks,
+            source_checksum: compute_checksum(&source),
             line_to_block,
         })
     }
@@ -122,6 +125,7 @@ impl FileBlocks {
                 ast::Stmt::Import(_)
                 | ast::Stmt::ImportFrom(_)
                 | ast::Stmt::FunctionDef(_)
+                | ast::Stmt::AsyncFunctionDef(_)
                 | ast::Stmt::ClassDef(_) => continue,
                 _ => {
                     let start = offset_to_line(source, stmt.range().start().into());
@@ -154,8 +158,7 @@ impl FileBlocks {
             }
         };
 
-        for i in 1..top_level_ranges.len() {
-            let (start, end) = top_level_ranges[i];
+        for &(start, end) in top_level_ranges.iter().skip(1) {
             if start <= current_end + 2 {
                 current_end = end;
             } else {
@@ -236,31 +239,17 @@ impl FileBlocks {
                     let start = offset_to_line(source, class.range.start().into());
                     let end = offset_to_line(source, class.range.end().into());
 
-                    // Class header (before first method)
-                    let header_end = class
-                        .body
-                        .iter()
-                        .filter_map(|s| {
-                            if matches!(
-                                s,
-                                ast::Stmt::FunctionDef(_) | ast::Stmt::AsyncFunctionDef(_)
-                            ) {
-                                Some(offset_to_line(source, s.range().start().into()) - 1)
-                            } else {
-                                None
-                            }
-                        })
-                        .min()
-                        .unwrap_or(end);
-
-                    let class_source = extract_lines(source, start, header_end);
+                    // Keep the whole class as a fallback for attributes and
+                    // nested statements between or after methods. Method blocks
+                    // override their own line ranges in the index.
+                    let class_source = extract_lines(source, start, end);
                     blocks.push(Block {
                         id: BlockId {
                             file: file.to_path_buf(),
                             kind: BlockKind::Class,
                             name: class.name.to_string(),
                             start_line: start,
-                            end_line: header_end,
+                            end_line: end,
                         },
                         checksum: compute_checksum(&class_source),
                     });
@@ -275,15 +264,9 @@ impl FileBlocks {
 }
 
 fn compute_checksum(source: &str) -> String {
-    let normalized: String = source
-        .lines()
-        .map(|l| l.trim())
-        .filter(|l| !l.is_empty() && !l.starts_with('#'))
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    let hash = xxh64::xxh64(normalized.as_bytes(), 0);
-    format!("{:x}", hash)
+    // Whitespace and comment-looking lines are semantic inside Python strings,
+    // and indentation controls execution. Hash bytes without normalization.
+    format!("{:016x}", xxh64::xxh64(source.as_bytes(), 0))
 }
 
 fn extract_lines(source: &str, start: usize, end: usize) -> String {
@@ -309,17 +292,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_checksum_ignores_whitespace() {
+    fn test_checksum_preserves_whitespace() {
         let a = compute_checksum("def foo():\n    pass");
         let b = compute_checksum("def foo():\n        pass");
-        assert_eq!(a, b);
+        assert_ne!(a, b);
     }
 
     #[test]
-    fn test_checksum_ignores_comments() {
+    fn test_checksum_preserves_comments() {
         let a = compute_checksum("def foo():\n    pass");
         let b = compute_checksum("def foo():\n    # comment\n    pass");
-        assert_eq!(a, b);
+        assert_ne!(a, b);
     }
 
     #[test]

@@ -70,3 +70,7 @@ docs/_build/
 
 # Pyenv
 .python-version
+
+# Local benchmark results
+/benches/results/
+/benchmark-results*.json

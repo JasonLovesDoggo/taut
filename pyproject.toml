@@ -1,6 +1,6 @@
 [project]
 name = "taut"
-requires-python = ">=3.12,<3.14"
+requires-python = ">=3.12"
 keywords = ["python", "testing", "test-runner", "performance", "parallel", "cli", "rust"]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -10,6 +10,7 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Programming Language :: Python :: Implementation :: CPython",
     "Topic :: Software Development :: Testing",
     "Topic :: Software Development :: Testing :: Unit",
@@ -19,17 +20,14 @@ authors = [
 ]
 dynamic = ["version", "description", "readme"]
 
-[project.scripts]
-taut = "taut:main"
-
 [build-system]
 requires = ["maturin>=1.10,<2.0"]
 build-backend = "maturin"
 
 [tool.maturin]
-features = ["extension-module"]
+bindings = "bin"
 python-source = "python"
-module-name = "taut._taut"
+strip = true
 
 [dependency-groups]
 dev = [

@@ -14,7 +14,7 @@ use std::path::Path;
 use anyhow::Result;
 use tempfile::TempDir;
 
-use helpers::{dedent, write_python_file};
+use helpers::dedent;
 
 fn write_file(path: &Path, content: &str) -> Result<()> {
     if let Some(parent) = path.parent() {
@@ -168,7 +168,7 @@ fn discover_single_file_path() -> Result<()> {
     write_file(&tmp.path().join("test_other.py"), "def test_ok(): pass\n")?;
 
     // Pass single file path instead of directory
-    let files = taut::discovery::find_test_files(&[target.clone()])?;
+    let files = taut::discovery::find_test_files(std::slice::from_ref(&target))?;
 
     assert_eq!(files.len(), 1);
     assert_eq!(files[0], target);
@@ -658,15 +658,8 @@ fn handle_nested_classes() -> Result<()> {
         ),
     )?;
 
-    let items = taut::discovery::extract_tests_from_file(&file)?;
-
-    // At minimum, TestOuter.test_outer should be found
-    let outer = items.iter().find(|i| i.function == "test_outer");
-    assert!(outer.is_some(), "Should find test_outer");
-    assert_eq!(outer.unwrap().class, Some("TestOuter".to_string()));
-
-    // Nested classes may or may not be supported - document the behavior
-    // For now, we just verify no panic
+    let error = taut::discovery::extract_tests_from_file(&file).unwrap_err();
+    assert!(error.to_string().contains("nested test class"));
 
     Ok(())
 }

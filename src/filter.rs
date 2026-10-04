@@ -30,15 +30,15 @@ impl TestFilter {
     pub fn new(pattern: &str) -> Result<Self, regex::Error> {
         // Handle file.py::test syntax
         if let Some((file_part, test_part)) = pattern.split_once("::") {
-            let file_regex = glob_to_regex(file_part)?;
-            let test_regex = glob_to_regex(test_part)?;
+            let file_regex = glob_to_regex(file_part, false)?;
+            let test_regex = glob_to_regex(test_part, true)?;
             Ok(Self {
                 pattern: pattern.to_string(),
                 regex: test_regex,
                 file_pattern: Some(file_regex),
             })
         } else {
-            let regex = glob_to_regex(pattern)?;
+            let regex = glob_to_regex(pattern, true)?;
             Ok(Self {
                 pattern: pattern.to_string(),
                 regex,
@@ -59,10 +59,10 @@ impl TestFilter {
         };
 
         // If we have a file filter, check it first
-        if let Some(ref file_regex) = self.file_pattern {
-            if !file_regex.is_match(file_part) {
-                return false;
-            }
+        if let Some(ref file_regex) = self.file_pattern
+            && !file_regex.is_match(file_part)
+        {
+            return false;
         }
 
         // Match the test part
@@ -81,7 +81,7 @@ impl TestFilter {
 /// - `*` → matches any sequence of characters (except ::)
 /// - `?` → matches any single character
 /// - Other characters are escaped
-fn glob_to_regex(pattern: &str) -> Result<Regex, regex::Error> {
+fn glob_to_regex(pattern: &str, subtest_syntax: bool) -> Result<Regex, regex::Error> {
     let mut regex_str = String::with_capacity(pattern.len() * 2 + 4);
 
     // Case-insensitive matching (like Go's -run and pytest's -k)
@@ -93,7 +93,7 @@ fn glob_to_regex(pattern: &str) -> Result<Regex, regex::Error> {
     for c in pattern.chars() {
         match c {
             '*' => regex_str.push_str("[^:]*"), // Match anything except ::
-            '?' => regex_str.push('.'),
+            '?' => regex_str.push_str("[^:]"),
             '.' => regex_str.push_str("\\."),
             '^' => regex_str.push_str("\\^"),
             '$' => regex_str.push_str("\\$"),
@@ -106,7 +106,7 @@ fn glob_to_regex(pattern: &str) -> Result<Regex, regex::Error> {
             '}' => regex_str.push_str("\\}"),
             '+' => regex_str.push_str("\\+"),
             '\\' => regex_str.push_str("\\\\"),
-            '/' => regex_str.push_str("::"), // Treat / as :: for subtest syntax
+            '/' if subtest_syntax => regex_str.push_str("::"), // Treat / as :: for subtest syntax
             _ => regex_str.push(c),
         }
     }
