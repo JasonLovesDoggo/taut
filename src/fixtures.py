@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import threading
 
 
 class FixtureError(RuntimeError):
@@ -18,6 +19,7 @@ class FixtureError(RuntimeError):
 
 
 _MISSING = object()
+_IMPORT_LOCK = threading.RLock()
 
 
 class MonkeyPatch:
@@ -30,9 +32,17 @@ class MonkeyPatch:
         old = getattr(target, name, _MISSING)
         if old is _MISSING and raising:
             raise AttributeError(name)
-        # Keep class descriptors intact instead of restoring a bound method.
+        # Restore the actual attribute owner. A patch of an inherited instance
+        # attribute must remove its new shadow; slots and properties instead
+        # require restoring their observed value through the descriptor.
         if isinstance(target, type):
             old = target.__dict__.get(name, _MISSING)
+        else:
+            namespace = getattr(target, "__dict__", None)
+            if namespace is not None and name not in namespace:
+                descriptor = inspect.getattr_static(type(target), name, None)
+                if not hasattr(descriptor, "__set__"):
+                    old = _MISSING
         setattr(target, name, value)
         self._undo.append(lambda: delattr(target, name) if old is _MISSING else setattr(target, name, old))
 
@@ -140,26 +150,71 @@ def _declaration(value):
     }
 
 
+class _ImportPath(str):
+    """Identity distinguishes our temporary entry from user edits to sys.path."""
+
+
 def _load_conftest(path):
-    module_name = "_taut_conftest_" + str(hash(str(path))).replace("-", "n")
-    if module_name in sys.modules:
-        return sys.modules[module_name]
-    spec = importlib.util.spec_from_file_location(module_name, path)
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = module
-    parent = str(path.parent)
-    added_path = parent not in sys.path
-    if added_path:
-        sys.path.insert(0, parent)
-    try:
-        spec.loader.exec_module(module)
-    except BaseException:
-        sys.modules.pop(module_name, None)
-        raise
-    finally:
-        if added_path:
-            sys.path.remove(parent)
-    return module
+    # Module publication and temporary sys.path changes must be atomic with
+    # respect to other registry builders, including when imports release the GIL.
+    with _IMPORT_LOCK:
+        package_parts = []
+        import_root = path.parent
+        while (import_root / "__init__.py").is_file():
+            package_parts.append(import_root.name)
+            import_root = import_root.parent
+        package = ".".join(reversed(package_parts))
+        module_name = (
+            package + ".conftest" if package
+            else "_taut_conftest_" + str(hash(str(path))).replace("-", "n")
+        )
+        cached = sys.modules.get(module_name)
+        if cached is not None:
+            cached_file = getattr(cached, "__file__", None)
+            if cached_file is None or Path(cached_file).resolve() != path.resolve():
+                raise FixtureError(f"conftest import {module_name!r} conflicts with {cached_file}")
+            return importlib.import_module(module_name) if package else cached
+
+        added = []
+        for directory in (import_root, path.parent):
+            entry = _ImportPath(str(directory))
+            if entry not in sys.path:
+                sys.path.insert(0, entry)
+                added.append(entry)
+        try:
+            if package:
+                # Import package __init__ files normally so relative imports
+                # have the same identity and behavior as the test's imports.
+                parent_module = importlib.import_module(package)
+                expected = (path.parent / "__init__.py").resolve()
+                actual = getattr(parent_module, "__file__", None)
+                if actual is None or Path(actual).resolve() != expected:
+                    raise FixtureError(f"conftest package {package!r} conflicts with {actual}")
+                return importlib.import_module(module_name)
+            spec = importlib.util.spec_from_file_location(module_name, path)
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[module_name] = module
+            try:
+                spec.loader.exec_module(module)
+            except BaseException:
+                sys.modules.pop(module_name, None)
+                raise
+            return module
+        finally:
+            for entry in added:
+                for index, current in enumerate(sys.path):
+                    if current is entry:
+                        del sys.path[index]
+                        break
+
+
+def _project_root(directory):
+    """Infer the test project's boundary without consulting mutable cwd."""
+    markers = ("pyproject.toml", "pytest.ini", "setup.cfg", "setup.py", ".git")
+    for parent in (directory, *directory.parents):
+        if any((parent / marker).exists() for marker in markers):
+            return parent
+    return directory
 
 
 class FixtureRegistry:
@@ -175,12 +230,13 @@ class FixtureRegistry:
 
     @classmethod
     def from_module(cls, module, test_file=None, root=None):
+        """Collect ancestors within root, or the nearest project configuration."""
         registry = cls()
         test_file = test_file or getattr(module, "__file__", None)
         if test_file:
             directory = Path(test_file).resolve().parent
-            boundary = Path(root).resolve() if root is not None else None
-            if boundary is not None and boundary != directory and boundary not in directory.parents:
+            boundary = Path(root).resolve() if root is not None else _project_root(directory)
+            if boundary != directory and boundary not in directory.parents:
                 raise FixtureError(f"fixture root {boundary} is not an ancestor of {directory}")
             ancestors = []
             for parent in (directory, *directory.parents):

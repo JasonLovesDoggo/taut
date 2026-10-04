@@ -1,11 +1,13 @@
 """Contract tests for fixture lifetimes; run with python tests/test_fixture_runtime.py."""
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import importlib.util
 import os
 from pathlib import Path
 import sys
 import tempfile
+import threading
 import types
 import unittest
 import weakref
@@ -339,6 +341,144 @@ class FixtureTests(unittest.IsolatedAsyncioTestCase):
             del module.number
             async with FixtureContext(FixtureRegistry.from_module(module, test_file, root)) as context:
                 self.assertEqual(await context.resolve("number"), 2)
+
+    async def test_package_conftest_supports_parent_relative_and_sibling_imports(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            name = "fixture_package_" + root.name
+            package = root / name
+            nested = package / "nested"
+            nested.mkdir(parents=True)
+            (package / "__init__.py").write_text("")
+            (nested / "__init__.py").write_text("")
+            (package / "shared.py").write_text("PARENT = 10\n")
+            (nested / "helper.py").write_text("LOCAL = 20\n")
+            sibling_name = "fixture_sibling_" + root.name
+            (nested / f"{sibling_name}.py").write_text("SIBLING = 12\n")
+            (nested / "conftest.py").write_text(
+                "from _fixture_decorators import fixture\n"
+                "from ..shared import PARENT\nfrom .helper import LOCAL\n"
+                f"from {sibling_name} import SIBLING\n"
+                "@fixture\ndef number(): return PARENT + LOCAL + SIBLING\n"
+            )
+            original_path = sys.path[:]
+            module = types.ModuleType("fixture_package_test")
+            definitions = FixtureRegistry.from_module(module, nested / "test_example.py", root)
+            self.assertEqual(sys.path, original_path)
+            async with FixtureContext(definitions) as context:
+                self.assertEqual(await context.resolve("number"), 42)
+            self.assertEqual(sys.modules[f"{name}.nested.conftest"].__package__, f"{name}.nested")
+
+    async def test_default_root_follows_project_configuration_not_cwd(self):
+        with tempfile.TemporaryDirectory() as directory:
+            outside = Path(directory).resolve()
+            root = outside / "project"
+            nested = root / "tests"
+            nested.mkdir(parents=True)
+            (root / "pyproject.toml").write_text("")
+            (outside / "conftest.py").write_text(
+                "from _fixture_decorators import fixture\n@fixture\ndef leaked(): return True\n"
+            )
+            (root / "conftest.py").write_text(
+                "from _fixture_decorators import fixture\n@fixture\ndef number(): return 42\n"
+            )
+            original_cwd = os.getcwd()
+            try:
+                os.chdir(outside)
+                module = types.ModuleType("fixture_root_test")
+                definitions = FixtureRegistry.from_module(module, nested / "test_example.py")
+            finally:
+                os.chdir(original_cwd)
+            async with FixtureContext(definitions) as context:
+                self.assertEqual(await context.resolve("number"), 42)
+                with self.assertRaisesRegex(FixtureError, "not found"):
+                    await context.resolve("leaked")
+            with self.assertRaisesRegex(FixtureError, "not an ancestor"):
+                FixtureRegistry.from_module(module, nested / "test_example.py", root / "elsewhere")
+
+    def test_concurrent_conftest_loading_never_exposes_partial_module(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory).resolve() / "conftest.py"
+            path.write_text("import time\ntime.sleep(0.04)\nready = object()\n")
+            barrier = threading.Barrier(8)
+
+            def load_concurrently():
+                barrier.wait()
+                return runtime._load_conftest(path).ready
+
+            before = sys.path[:]
+            with ThreadPoolExecutor(max_workers=8) as pool:
+                results = list(pool.map(lambda _: load_concurrently(), range(8)))
+            self.assertTrue(all(value is results[0] for value in results))
+            self.assertEqual(sys.path, before)
+
+    def test_failed_conftest_can_retry_and_path_cleanup_preserves_original_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory).resolve() / "conftest.py"
+            path.write_text(
+                "import sys\nfrom pathlib import Path\n"
+                "sys.path.remove(str(Path(__file__).parent))\n"
+                "raise ValueError('original import error')\n"
+            )
+            before = sys.path[:]
+            with self.assertRaisesRegex(ValueError, "original import error"):
+                runtime._load_conftest(path)
+            self.assertEqual(sys.path, before)
+            path.write_text("ready = True\n")
+            self.assertTrue(runtime._load_conftest(path).ready)
+            self.assertEqual(sys.path, before)
+
+    def test_monkeypatch_removes_inherited_instance_shadows(self):
+        class Parent:
+            value = 1
+
+            def method(self):
+                return self.value
+
+        target = Parent()
+        patch = runtime.MonkeyPatch()
+        patch.setattr(target, "value", 2)
+        patch.setattr(target, "method", lambda: 3)
+        self.assertEqual(target.value, 2)
+        self.assertEqual(target.method(), 3)
+        patch.undo()
+        self.assertEqual(vars(target), {})
+        Parent.value = 4
+        self.assertEqual(target.value, 4)
+        self.assertEqual(target.method(), 4)
+
+    def test_monkeypatch_restores_descriptor_values_and_class_descriptors(self):
+        class Slotted:
+            __slots__ = ("value", "__dict__")
+
+        class Property:
+            def __init__(self):
+                self._value = 1
+
+            @property
+            def value(self):
+                return self._value
+
+            @value.setter
+            def value(self, value):
+                self._value = value
+
+        class Class:
+            @classmethod
+            def method(cls):
+                return 1
+
+        original = Class.__dict__["method"]
+        slotted, prop = Slotted(), Property()
+        slotted.value = 1
+        patch = runtime.MonkeyPatch()
+        patch.setattr(slotted, "value", 2)
+        patch.setattr(prop, "value", 2)
+        patch.setattr(Class, "method", lambda: 2)
+        patch.undo()
+        self.assertEqual(slotted.value, 1)
+        self.assertEqual(prop.value, 1)
+        self.assertIs(Class.__dict__["method"], original)
 
     async def test_pytest_fixture_if_installed(self):
         try:
