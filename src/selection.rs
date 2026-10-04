@@ -342,7 +342,10 @@ fn snapshot_optional_file(
     files: &mut BTreeMap<PathBuf, String>,
     incomplete: &mut bool,
 ) {
-    let path = canonical_path(path);
+    // The environment and package roots are already absolute. Retain metadata
+    // symlink paths so retargeting one is checked on the next snapshot, while
+    // avoiding one expensive realpath call per installed metadata file.
+    let path = path.to_path_buf();
     if files.contains_key(&path) {
         return;
     }
