@@ -24,7 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Captured test output fields (`stdout`/`stderr`) in `TestResult`.
 - `sys.monitoring` coverage collection in `process-per-run` mode (with `sys.settrace` fallback).
 - Rust integration tests for discovery rules (`tests/discovery_rules.rs`).
-- Warm worker pool (`src/worker_pool.rs`) for `process-per-run` mode: N long-lived Python workers with JSON-over-stdio protocol, crash recovery, and parallel test dispatch. ~23% faster than `process-per-test` on typical workloads.
+- Warm worker pool (`src/worker_pool.rs`) for `process-per-run` mode: N long-lived Python workers with JSON-over-stdio protocol, crash recovery, and parallel test dispatch. Performance depends on the workload; use the validated benchmark harness in `benches/compare_execution.py` to compare execution modes.
 - `-j`/`--jobs` flag now applies to worker pool in `process-per-run` mode.
 - `taut list` command: show discovered tests without running them.
 - `taut watch` command: watch for file changes and re-run affected tests automatically.
