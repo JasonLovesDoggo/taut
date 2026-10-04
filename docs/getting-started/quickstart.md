@@ -34,7 +34,7 @@ taut -v
 
 `taut list` parses source without importing tests or running fixtures. Copy a printed node ID to run that exact function or class method. `-k` matches case-insensitive name substrings and globs; quote patterns so the shell does not expand them. It is not a Python or pytest boolean expression.
 
-Directory discovery recognizes `test_*.py`, `_test*.py`, and `*_test.py`. Functions and methods beginning with `test_` or `_test` are collected, including async functions. Test classes begin with `Test`. Explicitly selected Python files do not need a matching filename.
+Directory discovery recognizes `test_*.py`, `_test*.py`, and `*_test.py`. Functions and methods beginning with `test_` or `_test` are collected, including async functions. Plain test classes begin with `Test`; recognized `unittest.TestCase` subclasses are also collected. Explicitly selected Python files do not need a matching filename.
 
 ## Choose how much to run at once
 

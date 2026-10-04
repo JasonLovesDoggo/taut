@@ -2,6 +2,8 @@
 
 Taut requires Python 3.12 or later. Prebuilt wheels install a native `taut` executable and the Python package together. Rust is required only when building from source or installing on a platform without a compatible wheel.
 
+The features documented here are unreleased. Use the [source installation](#build-from-source) below to try the current branch; the package-index commands install the existing published release.
+
 ## Install in your project
 
 With an activated virtual environment:

@@ -16,6 +16,8 @@
 - Add function-scoped fixtures, fixture dependencies, `conftest.py`, autouse fixtures, sync/async `yield` cleanup, `tmp_path`, and `monkeypatch`.
 - Collect functions and class methods from `test_*.py`, `_test*.py`, and `*_test.py`; accept explicit Python files and exact node IDs.
 - Deduplicate overlapping collection roots and skip common dependency/build directories during directory discovery.
+- Collect inherited methods from local test-class hierarchies and recognize standard unittest test classes.
+- Expand literal `@parametrize` cases during collection, including stacked and class-level cases, readable case IDs, and exact case selection.
 - Keep `taut list` free of test-module imports.
 
 ### CLI and configuration

@@ -4,6 +4,8 @@
 
 A Python test runner with native Rust collection and a pool of reusable Python workers. Runs your full suite in parallel by default. Ordinary functions, `async def` tests, and tests that start their own threads use the same command.
 
+These docs describe the unreleased development branch. [Build from source](docs/getting-started/installation.md#build-from-source) to try these changes; the published PyPI release does not include them yet.
+
 ## Start here
 
 In your project's Python environment (Python 3.12+):
@@ -67,7 +69,7 @@ def test_greeting(greeting_file):
     assert greeting_file.read_text() == "hello"
 ```
 
-Function-scoped fixtures can depend on other fixtures, use `yield` for cleanup, and be async. Share them in `conftest.py`. Built-ins include `tmp_path` and `monkeypatch`. [Writing tests](docs/guide/writing-tests.md).
+Function-scoped fixtures can depend on other fixtures, use `yield` for cleanup, and be async. Share them in `conftest.py`. Built-ins include `tmp_path` and `monkeypatch`. Use `@parametrize` for literal test cases with individually selectable IDs. [Writing tests](docs/guide/writing-tests.md).
 
 ## Measure the work that matters
 

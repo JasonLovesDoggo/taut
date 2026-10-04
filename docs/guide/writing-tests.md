@@ -47,7 +47,7 @@ No decorator or plugin is needed. Each worker reuses an event loop. By default, 
 
 Concurrent tests share process globals, environment variables, and event-loop configuration. Do not mutate those while another test uses them. Use `@mark(serial=True)` or leave async concurrency at one. Process-per-test isolation and `--no-parallel` reject an async concurrency setting greater than one.
 
-Tests should await their work and close resources. Taut cancels unfinished tasks owned by a completed async test, but that is not a replacement for deterministic cleanup. Python-level output follows async task context; native or unowned thread output during overlap may be reported as shared worker output.
+Tests should await their work and close resources. Taut cancels unfinished tasks owned by a completed async test, but that is not a replacement for deterministic cleanup. Python-level output follows async task context. Native writes and output from threads without a test context cannot always be assigned to one overlapping test; the result that collects them marks them as shared worker output.
 
 Pytest-asyncio can also run under pytest-xdist. Xdist distributes tests across processes; Taut's opt-in same-loop overlap is a separate capability.
 
@@ -172,9 +172,34 @@ def test_environment(monkeypatch):
 
 Restore actions run in reverse order. Use `setattr(object, "attribute", value)`; the dotted-string shorthand from pytest is not part of this API.
 
+## Parameterized tests
+
+Declare literal cases with `parametrize`. Each case is collected, scheduled, and reported independently:
+
+```python
+# test_numbers.py
+from taut import parametrize
+
+
+@parametrize("text, expected", [("2", 2), ("-3", -3)], ids=["positive", "negative"])
+def test_parse(text, expected):
+    assert int(text) == expected
+```
+
+```sh
+taut list test_numbers.py
+taut 'test_numbers.py::test_parse[negative]'
+```
+
+Quote node IDs containing brackets so your shell preserves them. Select the unqualified function ID to run all its cases. Stacked decorators produce a Cartesian product, and class-level cases combine with method-level cases. A parameter supplies the matching argument; other arguments can still request fixtures.
+
+Static collection accepts literal strings, booleans, `None`, finite numbers, lists, and dictionaries with string keys. Integer values must fit a signed or unsigned 64-bit range. Tuple containers and tuple rows are valid, but tuple-valued arguments are rejected rather than converted to a different Python type.
+
+Dynamic expressions, generated case lists, indirect parametrization, and empty case sets are collection errors. Put literal values directly in the decorator. `ids` can supply readable labels; use `taut list` to copy the exact generated IDs.
+
 ## Classes and lifecycle hooks
 
-Group methods in a class whose name begins with `Test`. A new instance is created for each test. `setUp`/`tearDown` and `asyncSetUp`/`asyncTearDown` are supported; cleanup follows successful setup stages.
+Group methods in a class whose name begins with `Test`. A new instance is created for each test. Plain test classes can use `setUp`/`tearDown` and `asyncSetUp`/`asyncTearDown`; cleanup follows successful setup stages.
 
 ```python
 class TestCounter:
@@ -188,6 +213,19 @@ class TestCounter:
         self.values.append(1)
         assert self.values == [1]
 ```
+
+Plain test classes can inherit test methods from bases in the same module. `unittest.TestCase` and `unittest.IsolatedAsyncioTestCase` subclasses are also recognized, even when their class names do not start with `Test`:
+
+```python
+import unittest
+
+
+class ArithmeticCase(unittest.TestCase):
+    def test_sum(self):
+        self.assertEqual(1 + 2, 3)
+```
+
+Other imported or dynamically constructed base classes cannot be resolved without importing them, so collection rejects them. Define test classes and functions directly in the module instead of inside conditional statements.
 
 Use fixtures for reusable dependencies. Taut supports a defined subset of pytest-style tests; it does not load pytest's plugin or hook system. Dynamically generated tests and unsupported fixture lifetimes need adaptation.
 

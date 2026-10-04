@@ -9,6 +9,8 @@ uv pip install taut
 taut
 ```
 
+These are development-branch docs. The published release does not include these changes yet; [build from source](getting-started/installation.md#build-from-source) to try them.
+
 Use your project's Python 3.12+ environment. The installed CLI is a native executable, and the Python package provides decorators and `python -m taut`.
 
 ## A small command surface
