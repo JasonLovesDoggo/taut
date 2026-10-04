@@ -21,7 +21,7 @@ Taut reports the test ID, exception, traceback, and captured output on failure. 
 | Reset the interpreter per test | `taut --isolation process-per-test` | A fresh Python process for every test |
 | Protect a shared resource | `@mark(serial=True)` | An exclusive scheduling barrier for that test |
 
-Workers live for one invocation. Imported modules and process globals survive between tests assigned to the same warm worker. `--no-parallel` controls scheduling; it does not reset state. Fresh process isolation costs more startup and imports, but is useful for tests that cannot restore interpreter state.
+Workers live for one test run; watch mode creates fresh workers for each rerun. Imported modules and process globals survive between tests assigned to the same warm worker. `--no-parallel` controls scheduling; it does not reset state. Fresh process isolation costs more startup and imports, but is useful for tests that cannot restore interpreter state.
 
 Process isolation does not isolate files, databases, network services, or other external resources. Use unique test resources, cleanup, and serial execution where appropriate.
 
@@ -255,7 +255,9 @@ taut --timeout 5
 taut -x
 ```
 
-The timeout is expressed in seconds. Async work can be cancelled cooperatively; a worker that does not respond can be terminated. Cleanup cannot be guaranteed after hard termination, so external resources still need a recovery strategy.
+The timeout is expressed in seconds. Async work can be cancelled cooperatively; a worker that does not respond can be terminated. Python cleanup cannot run after hard termination.
+
+On Unix, worker cleanup terminates its owned process group, including child processes that have not detached. Detached children and Windows descendants are not guaranteed to terminate. Tests remain responsible for closing resources and joining their child processes.
 
 `-x` stops scheduling after the first observed failure. Tests already running may complete. With fail-fast enabled, the runner dispatches one test at a time to each worker; same-loop async overlap is consequently reduced.
 
