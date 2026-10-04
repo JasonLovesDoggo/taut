@@ -195,6 +195,8 @@ taut 'test_numbers.py::test_parse[negative]'
 
 Quote node IDs containing brackets so your shell preserves them. Select the unqualified function ID to run all its cases. Stacked decorators produce a Cartesian product, and class-level cases combine with method-level cases. A parameter supplies the matching argument; other arguments can still request fixtures.
 
+Use the static decorator spellings `@parametrize`, `@taut.parametrize`, or `@pytest.mark.parametrize` (the last requires pytest to be installed). Arbitrary aliases such as `@cases` and computed decorator wrappers are not statically expanded. Use `taut list` to inspect the collected cases.
+
 Static collection accepts literal strings, booleans, `None`, finite numbers, lists, and dictionaries with string keys. Integer values must fit a signed or unsigned 64-bit range. Tuple containers and tuple rows are valid, but tuple-valued arguments are rejected rather than converted to a different Python type.
 
 Dynamic expressions, generated case lists, indirect parametrization, and empty case sets are collection errors. Put literal values directly in the decorator. `ids` can supply readable labels; use `taut list` to copy the exact generated IDs.
