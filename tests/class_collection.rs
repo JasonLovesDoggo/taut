@@ -315,3 +315,93 @@ fn nested_unittest_subclasses_with_only_inherited_tests_are_rejected() {
         );
     }
 }
+
+#[test]
+fn class_serial_markers_survive_unrelated_method_marks() {
+    use taut::markers::MarkerValue;
+    let items = collect("@mark(serial=True, group='database')\nclass TestDatabase:\n    @mark(slow=True)\n    def test_write(self): pass\n").unwrap();
+    let marker = items[0]
+        .markers
+        .iter()
+        .find(|marker| marker.name == "mark")
+        .unwrap();
+    assert_eq!(
+        marker.args.kwargs.get("serial"),
+        Some(&MarkerValue::Bool(true))
+    );
+    assert_eq!(
+        marker.args.kwargs.get("slow"),
+        Some(&MarkerValue::Bool(true))
+    );
+    assert_eq!(items[0].groups(), ["database"]);
+}
+
+#[test]
+fn method_explicit_false_overrides_class_defaults_by_key() {
+    use taut::markers::MarkerValue;
+    let items = collect("@mark(serial=True, slow=True, group='database')\nclass TestDatabase:\n    @mark(serial=False, slow=False)\n    def test_read(self): pass\n").unwrap();
+    let marker = items[0]
+        .markers
+        .iter()
+        .find(|marker| marker.name == "mark")
+        .unwrap();
+    assert_eq!(
+        marker.args.kwargs.get("serial"),
+        Some(&MarkerValue::Bool(false))
+    );
+    assert!(!items[0].is_slow());
+    assert_eq!(items[0].groups(), ["database"]);
+    assert_eq!(
+        items[0]
+            .markers
+            .iter()
+            .filter(|marker| marker.name == "mark")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn class_skip_and_method_skip_reason_are_preserved() {
+    let items = collect("@skip('class reason')\nclass TestSkipped:\n    def test_inherited_reason(self): assert False\n    @skip('method reason')\n    def test_override_reason(self): assert False\n").unwrap();
+    assert!(items.iter().all(TestItem::is_skipped));
+    assert_eq!(items[0].skip_reason().as_deref(), Some("class reason"));
+    assert_eq!(items[1].skip_reason().as_deref(), Some("method reason"));
+}
+
+#[test]
+fn marker_defaults_follow_c3_with_per_key_precedence() {
+    use taut::markers::MarkerValue;
+    let items = collect("@mark(serial=True, slow=True, group='base')\n@skip('base skip')\nclass Base:\n    def test_fail(self): assert False\n@mark(slow=False)\nclass Left(Base): pass\n@mark(group='right')\nclass Right(Base): pass\nclass TestDiamond(Left, Right): pass\n").unwrap();
+    assert_eq!(items.len(), 1);
+    assert!(items[0].is_skipped());
+    assert_eq!(items[0].skip_reason().as_deref(), Some("base skip"));
+    assert!(!items[0].is_slow());
+    assert_eq!(items[0].groups(), ["right"]);
+    let marker = items[0]
+        .markers
+        .iter()
+        .find(|marker| marker.name == "mark")
+        .unwrap();
+    assert_eq!(
+        marker.args.kwargs.get("serial"),
+        Some(&MarkerValue::Bool(true))
+    );
+}
+
+#[test]
+fn stacked_mark_decorators_merge_with_outermost_precedence() {
+    use taut::markers::MarkerValue;
+    let items = collect("@mark(serial=True)\n@mark(group='outer')\nclass TestStacked:\n    @mark(slow=False)\n    @mark(slow=True, serial=False)\n    def test_one(self): pass\n").unwrap();
+    assert!(!items[0].is_slow());
+    assert_eq!(items[0].groups(), ["outer"]);
+    let marker = items[0]
+        .markers
+        .iter()
+        .find(|marker| marker.name == "mark")
+        .unwrap();
+    assert_eq!(
+        marker.args.kwargs.get("serial"),
+        Some(&MarkerValue::Bool(false))
+    );
+}

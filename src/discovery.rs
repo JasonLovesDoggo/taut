@@ -243,11 +243,7 @@ fn make_item(
         return Ok(false);
     };
     let mut markers = markers::extract_markers(decorators);
-    for marker in markers::extract_class_markers(inherited) {
-        if !markers.iter().any(|existing| existing.name == marker.name) {
-            markers.push(marker);
-        }
-    }
+    markers::inherit_markers(&mut markers, &markers::extract_class_markers(inherited));
     let item = TestItem {
         file: path.to_path_buf(),
         function: name.to_owned(),

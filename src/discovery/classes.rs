@@ -371,16 +371,9 @@ impl<'a> Classes<'a> {
         for key in mro {
             if let ClassKey::Local(index) = key {
                 class_decorators.extend(&self.classes[*index].node.decorator_list);
-                for marker in
-                    markers::extract_class_markers(&self.classes[*index].node.decorator_list)
-                {
-                    if !class_markers
-                        .iter()
-                        .any(|existing: &markers::Marker| existing.name == marker.name)
-                    {
-                        class_markers.push(marker);
-                    }
-                }
+                let inherited =
+                    markers::extract_class_markers(&self.classes[*index].node.decorator_list);
+                markers::inherit_markers(&mut class_markers, &inherited);
             }
         }
         let mut seen = HashSet::new();
@@ -457,11 +450,7 @@ impl<'a> Classes<'a> {
                     _ => continue,
                 };
                 let mut markers = markers::extract_markers(decorators);
-                for marker in &class_markers {
-                    if !markers.iter().any(|existing| existing.name == marker.name) {
-                        markers.push(marker.clone());
-                    }
-                }
+                markers::inherit_markers(&mut markers, &class_markers);
                 let item = TestItem {
                     file: path.to_owned(),
                     function: binding.name.to_owned(),
