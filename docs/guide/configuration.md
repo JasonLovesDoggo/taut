@@ -42,11 +42,36 @@ Interpreter selection uses this order:
 1. `--python`, or the configured `python` value.
 2. `TAUT_PYTHON`.
 3. The active `VIRTUAL_ENV` interpreter.
-4. A Python executable beside the installed `taut` command.
-5. The nearest `.venv` in the current directory or its ancestors.
+4. The selected project's `.venv` interpreter.
+5. A Python executable beside the installed `taut` command.
 6. `python3` on PATH, or `python` on Windows.
 
 `python -m taut` supplies its interpreter through `TAUT_PYTHON` when that variable is unset. Explicit interpreter configuration still takes precedence. A relative configuration path such as `.venv/bin/python` is resolved against its `pyproject.toml`; a bare command such as `python3.13` uses PATH. On Windows, a virtual environment's interpreter is `.venv\Scripts\python.exe`.
+
+## Inspect the environment
+
+```sh
+uv run taut doctor tests
+uv run taut doctor tests --json
+```
+
+`doctor [PATH]` reports the project root, configuration path, selected Python executable and version, why that interpreter was selected, and effective run options. It does not import tests or run fixtures. Pass the same path and options as the failing command so you inspect the same selection.
+
+Use `uv run` for a uv project so the project and its dependencies are available. During a temporary source or wheel trial, retain the `--with` argument from [installation](../getting-started/installation.md#try-the-preview-in-your-project). `doctor` diagnoses the environment; it does not install missing packages.
+
+## Troubleshoot a first run
+
+| Symptom | Next step |
+| --- | --- |
+| `doctor` or a documented option is unknown | Confirm you installed the preview from [PR #1](https://github.com/JasonLovesDoggo/taut/pull/1), not the older PyPI release. |
+| `ModuleNotFoundError` for your application or dependency | Run `doctor` with the same path; use `uv run` with the normal test groups/extras, or install dependencies into the Python environment it reports. |
+| Wrong Python is selected | Inspect the selection reason in `doctor`; check explicit `--python`, `[tool.taut].python`, `TAUT_PYTHON`, and the active environment in that order. |
+| No tests collected | Use `taut list` on the directory, then on an explicit file. Directory discovery recognizes `test_*.py`, `_test*.py`, and `*_test.py`; functions/methods start with `test_` or `_test`. |
+| Collection reports a syntax error | Fix the reported file and line. `list` reads Python syntax even though it does not execute it. |
+| Unknown fixture, marker, or parameter case | Check the [pytest migration table](../getting-started/quickstart.md#bring-an-existing-pytest-suite); pytest plugins are not loaded. |
+| A failure needs more context | Copy the rerun command, keep your environment prefix, and add `-v` for the full traceback. |
+
+Quote node IDs containing brackets, such as `'tests/test_numbers.py::test_parse[negative]'`. `-k` accepts case-insensitive substrings and globs, not pytest boolean expressions. Run `taut --help` for grouped options and `taut <command> --help` for command-specific syntax.
 
 ## Watch mode
 

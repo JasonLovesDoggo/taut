@@ -8,7 +8,7 @@ def test_total():
     assert actual == 6, f"expected a total of 6, got {actual}"
 ```
 
-Taut reports the test ID, exception, traceback, and captured output on failure. It uses normal Python assertions; it does not rewrite them like pytest.
+Taut reports the test ID, source location, exception, captured output, and a rerun command on failure. The default traceback focuses on test and application frames; `-v` includes the full traceback. Keep your `uv run` or temporary `--with` prefix when rerunning so the same environment is used. Taut uses normal Python assertions; it does not rewrite them like pytest.
 
 ## Choose your execution model
 
