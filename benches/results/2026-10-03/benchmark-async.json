@@ -1,0 +1,585 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-10-04T03:24:06.768704+00:00",
+  "platform": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+  "machine": "arm64",
+  "cpu_count": 12,
+  "python": "3.13.16 (main, Oct  3 2026, 00:54:36) [Clang 22.1.3 ]",
+  "python_executable": "/Users/json/Documents/Codex/2026-10-03/go-cl/work/bench-env/bin/python",
+  "harness_sha256": "cea0acf0258bddc373eb7ba6aabea87bbed80087e1c548cbd48239fdb149b48f",
+  "python_prefix": "/Users/json/Documents/Codex/2026-10-03/go-cl/work/bench-env",
+  "dependencies": {
+    "pytest": "9.1.1",
+    "pytest-asyncio": "1.4.0",
+    "pytest-xdist": "3.8.0"
+  },
+  "config": {
+    "taut_arg": [
+      "--async-concurrency=16"
+    ],
+    "baseline_arg": [],
+    "workload": [
+      "async"
+    ],
+    "tests": 128,
+    "files": 8,
+    "jobs": 4,
+    "warmups": 2,
+    "repeats": 7,
+    "sleep": 0.01,
+    "cpu_iterations": 100000,
+    "timeout": 120,
+    "seed": 0,
+    "skip_pytest": false,
+    "skip_xdist": false
+  },
+  "binaries": {
+    "taut": {
+      "path": "/Users/json/src/taut/target/release/taut",
+      "version": "taut 0.1.0",
+      "sha256": "a55b7e1e74b155cb74beceb83cdd1a4f05b593384ff1ecc3fff5762ac9ba537e"
+    }
+  },
+  "environment": {
+    "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
+    "PYTEST_ADDOPTS": "",
+    "PYTHONHASHSEED": "0",
+    "NO_COLOR": "1",
+    "RAYON_NUM_THREADS": "4"
+  },
+  "methodology": "Fresh CLI process per sample; warm filesystem/import caches; no incremental test skipping; in-memory completion witnesses flushed at worker exit; all samples validated; randomized runner order each round; startup and shutdown included.",
+  "fixtures": {
+    "async": {
+      "expected_ids": [
+        "test_part_000.py::test_00000",
+        "test_part_000.py::test_00008",
+        "test_part_000.py::test_00016",
+        "test_part_000.py::test_00024",
+        "test_part_000.py::test_00032",
+        "test_part_000.py::test_00040",
+        "test_part_000.py::test_00048",
+        "test_part_000.py::test_00056",
+        "test_part_000.py::test_00064",
+        "test_part_000.py::test_00072",
+        "test_part_000.py::test_00080",
+        "test_part_000.py::test_00088",
+        "test_part_000.py::test_00096",
+        "test_part_000.py::test_00104",
+        "test_part_000.py::test_00112",
+        "test_part_000.py::test_00120",
+        "test_part_001.py::TestWorkload::test_00001",
+        "test_part_001.py::TestWorkload::test_00009",
+        "test_part_001.py::TestWorkload::test_00017",
+        "test_part_001.py::TestWorkload::test_00025",
+        "test_part_001.py::TestWorkload::test_00033",
+        "test_part_001.py::TestWorkload::test_00041",
+        "test_part_001.py::TestWorkload::test_00049",
+        "test_part_001.py::TestWorkload::test_00057",
+        "test_part_001.py::TestWorkload::test_00065",
+        "test_part_001.py::TestWorkload::test_00073",
+        "test_part_001.py::TestWorkload::test_00081",
+        "test_part_001.py::TestWorkload::test_00089",
+        "test_part_001.py::TestWorkload::test_00097",
+        "test_part_001.py::TestWorkload::test_00105",
+        "test_part_001.py::TestWorkload::test_00113",
+        "test_part_001.py::TestWorkload::test_00121",
+        "test_part_002.py::test_00002",
+        "test_part_002.py::test_00010",
+        "test_part_002.py::test_00018",
+        "test_part_002.py::test_00026",
+        "test_part_002.py::test_00034",
+        "test_part_002.py::test_00042",
+        "test_part_002.py::test_00050",
+        "test_part_002.py::test_00058",
+        "test_part_002.py::test_00066",
+        "test_part_002.py::test_00074",
+        "test_part_002.py::test_00082",
+        "test_part_002.py::test_00090",
+        "test_part_002.py::test_00098",
+        "test_part_002.py::test_00106",
+        "test_part_002.py::test_00114",
+        "test_part_002.py::test_00122",
+        "test_part_003.py::TestWorkload::test_00003",
+        "test_part_003.py::TestWorkload::test_00011",
+        "test_part_003.py::TestWorkload::test_00019",
+        "test_part_003.py::TestWorkload::test_00027",
+        "test_part_003.py::TestWorkload::test_00035",
+        "test_part_003.py::TestWorkload::test_00043",
+        "test_part_003.py::TestWorkload::test_00051",
+        "test_part_003.py::TestWorkload::test_00059",
+        "test_part_003.py::TestWorkload::test_00067",
+        "test_part_003.py::TestWorkload::test_00075",
+        "test_part_003.py::TestWorkload::test_00083",
+        "test_part_003.py::TestWorkload::test_00091",
+        "test_part_003.py::TestWorkload::test_00099",
+        "test_part_003.py::TestWorkload::test_00107",
+        "test_part_003.py::TestWorkload::test_00115",
+        "test_part_003.py::TestWorkload::test_00123",
+        "test_part_004.py::test_00004",
+        "test_part_004.py::test_00012",
+        "test_part_004.py::test_00020",
+        "test_part_004.py::test_00028",
+        "test_part_004.py::test_00036",
+        "test_part_004.py::test_00044",
+        "test_part_004.py::test_00052",
+        "test_part_004.py::test_00060",
+        "test_part_004.py::test_00068",
+        "test_part_004.py::test_00076",
+        "test_part_004.py::test_00084",
+        "test_part_004.py::test_00092",
+        "test_part_004.py::test_00100",
+        "test_part_004.py::test_00108",
+        "test_part_004.py::test_00116",
+        "test_part_004.py::test_00124",
+        "test_part_005.py::TestWorkload::test_00005",
+        "test_part_005.py::TestWorkload::test_00013",
+        "test_part_005.py::TestWorkload::test_00021",
+        "test_part_005.py::TestWorkload::test_00029",
+        "test_part_005.py::TestWorkload::test_00037",
+        "test_part_005.py::TestWorkload::test_00045",
+        "test_part_005.py::TestWorkload::test_00053",
+        "test_part_005.py::TestWorkload::test_00061",
+        "test_part_005.py::TestWorkload::test_00069",
+        "test_part_005.py::TestWorkload::test_00077",
+        "test_part_005.py::TestWorkload::test_00085",
+        "test_part_005.py::TestWorkload::test_00093",
+        "test_part_005.py::TestWorkload::test_00101",
+        "test_part_005.py::TestWorkload::test_00109",
+        "test_part_005.py::TestWorkload::test_00117",
+        "test_part_005.py::TestWorkload::test_00125",
+        "test_part_006.py::test_00006",
+        "test_part_006.py::test_00014",
+        "test_part_006.py::test_00022",
+        "test_part_006.py::test_00030",
+        "test_part_006.py::test_00038",
+        "test_part_006.py::test_00046",
+        "test_part_006.py::test_00054",
+        "test_part_006.py::test_00062",
+        "test_part_006.py::test_00070",
+        "test_part_006.py::test_00078",
+        "test_part_006.py::test_00086",
+        "test_part_006.py::test_00094",
+        "test_part_006.py::test_00102",
+        "test_part_006.py::test_00110",
+        "test_part_006.py::test_00118",
+        "test_part_006.py::test_00126",
+        "test_part_007.py::TestWorkload::test_00007",
+        "test_part_007.py::TestWorkload::test_00015",
+        "test_part_007.py::TestWorkload::test_00023",
+        "test_part_007.py::TestWorkload::test_00031",
+        "test_part_007.py::TestWorkload::test_00039",
+        "test_part_007.py::TestWorkload::test_00047",
+        "test_part_007.py::TestWorkload::test_00055",
+        "test_part_007.py::TestWorkload::test_00063",
+        "test_part_007.py::TestWorkload::test_00071",
+        "test_part_007.py::TestWorkload::test_00079",
+        "test_part_007.py::TestWorkload::test_00087",
+        "test_part_007.py::TestWorkload::test_00095",
+        "test_part_007.py::TestWorkload::test_00103",
+        "test_part_007.py::TestWorkload::test_00111",
+        "test_part_007.py::TestWorkload::test_00119",
+        "test_part_007.py::TestWorkload::test_00127"
+      ],
+      "source_sha256": {
+        "bench_probe.py": "944f220aed10390048b6cd508e7c6d4179e42704e4c8373f99ee0557f5070184",
+        "test_part_000.py": "1604eac127334a4ce798a0d0bb9d9e7ba765e134a7f0594fc2775e40198df880",
+        "test_part_001.py": "fe3c067d0c3959a35265d941e58be642cdcc6bc997ade332e8cdc2cfd99801fb",
+        "test_part_002.py": "af0dfc5afbdea5b1efb487c29aa203a1b45d39d281d8983a52c3161ad9bb151a",
+        "test_part_003.py": "9caae589b6236a37081c7543bcf11b78a8baf0f2722a51f9f7ab87c381860c8f",
+        "test_part_004.py": "444eaea242eef15de5380db096348d5f2823a3cfc46a3bcc5de3523d21459601",
+        "test_part_005.py": "9a37385f156931b693f1728e2e3392ced65c55a9cd0b91e28ab66d60369740c2",
+        "test_part_006.py": "712d6c1f61446ec57c40596b09e009f017a0b3a8ce6910e6dfa54aa5f8da419c",
+        "test_part_007.py": "9cea18eb720eba6ba330ec807dc88b4f0da7c71fbee3f4543cb1cdba13f8b029"
+      }
+    }
+  },
+  "results": [
+    {
+      "workload": "async",
+      "runner": "taut-j1",
+      "command": [
+        "/Users/json/src/taut/target/release/taut",
+        ".",
+        "--no-cache",
+        "-j",
+        "1",
+        "--async-concurrency=16"
+      ],
+      "cwd": "/var/folders/hn/d65rfm890ng16gj3hchtg5yc0000gn/T/taut-benchmark-4td4y4e9/async",
+      "expected_count": 128,
+      "samples": [
+        {
+          "seconds": 0.15570945900981314,
+          "round": 2,
+          "reported_count": 128,
+          "completed_count": 128,
+          "test_processes": 1,
+          "returncode": 0
+        },
+        {
+          "seconds": 0.15172487500240095,
+          "round": 3,
+          "reported_count": 128,
+          "completed_count": 128,
+          "test_processes": 1,
+          "returncode": 0
+        },
+        {
+          "seconds": 0.15765058301622048,
+          "round": 4,
+          "reported_count": 128,
+          "completed_count": 128,
+          "test_processes": 1,
+          "returncode": 0
+        },
+        {
+          "seconds": 0.16109937499277294,
+          "round": 5,
+          "reported_count": 128,
+          "completed_count": 128,
+          "test_processes": 1,
+          "returncode": 0
+        },
+        {
+          "seconds": 0.16138545799185522,
+          "round": 6,
+          "reported_count": 128,
+          "completed_count": 128,
+          "test_processes": 1,
+          "returncode": 0
+        },
+        {
+          "seconds": 0.1556305839912966,
+          "round": 7,
+          "reported_count": 128,
+          "completed_count": 128,
+          "test_processes": 1,
+          "returncode": 0
+        },
+        {
+          "seconds": 0.15020166701287962,
+          "round": 8,
+          "reported_count": 128,
+          "completed_count": 128,
+          "test_processes": 1,
+          "returncode": 0
+        }
+      ],
+      "warmups": [
+        {
+          "seconds": 0.15899079100927338,
+          "round": 0,
+          "reported_count": 128,
+          "completed_count": 128,
+          "test_processes": 1,
+          "returncode": 0
+        },
+        {
+          "seconds": 0.15486470799078234,
+          "round": 1,
+          "reported_count": 128,
+          "completed_count": 128,
+          "test_processes": 1,
+          "returncode": 0
+        }
+      ],
+      "median_seconds": 0.15570945900981314,
+      "min_seconds": 0.15020166701287962,
+      "max_seconds": 0.16138545799185522
+    },
+    {
+      "workload": "async",
+      "runner": "taut-j4",
+      "command": [
+        "/Users/json/src/taut/target/release/taut",
+        ".",
+        "--no-cache",
+        "-j",
+        "4",
+        "--async-concurrency=16"
+      ],
+      "cwd": "/var/folders/hn/d65rfm890ng16gj3hchtg5yc0000gn/T/taut-benchmark-4td4y4e9/async",
+      "expected_count": 128,
+      "samples": [
+        {
+          "seconds": 0.0874771660019178,
+          "round": 2,
+          "reported_count": 128,
+          "completed_count": 128,
+          "test_processes": 4,
+          "returncode": 0
+        },
+        {
+          "seconds": 0.08275487500941381,
+          "round": 3,
+          "reported_count": 128,
+          "completed_count": 128,
+          "test_processes": 4,
+          "returncode": 0
+        },
+        {
+          "seconds": 0.07995137499528937,
+          "round": 4,
+          "reported_count": 128,
+          "completed_count": 128,
+          "test_processes": 4,
+          "returncode": 0
+        },
+        {
+          "seconds": 0.0778615839954,
+          "round": 5,
+          "reported_count": 128,
+          "completed_count": 128,
+          "test_processes": 4,
+          "returncode": 0
+        },
+        {
+          "seconds": 0.08207358300569467,
+          "round": 6,
+          "reported_count": 128,
+          "completed_count": 128,
+          "test_processes": 4,
+          "returncode": 0
+        },
+        {
+          "seconds": 0.0799660420161672,
+          "round": 7,
+          "reported_count": 128,
+          "completed_count": 128,
+          "test_processes": 4,
+          "returncode": 0
+        },
+        {
+          "seconds": 0.08371358300792053,
+          "round": 8,
+          "reported_count": 128,
+          "completed_count": 128,
+          "test_processes": 4,
+          "returncode": 0
+        }
+      ],
+      "warmups": [
+        {
+          "seconds": 0.08136916701914743,
+          "round": 0,
+          "reported_count": 128,
+          "completed_count": 128,
+          "test_processes": 4,
+          "returncode": 0
+        },
+        {
+          "seconds": 0.08469224997679703,
+          "round": 1,
+          "reported_count": 128,
+          "completed_count": 128,
+          "test_processes": 4,
+          "returncode": 0
+        }
+      ],
+      "median_seconds": 0.08207358300569467,
+      "min_seconds": 0.0778615839954,
+      "max_seconds": 0.0874771660019178
+    },
+    {
+      "workload": "async",
+      "runner": "pytest",
+      "command": [
+        "/Users/json/Documents/Codex/2026-10-03/go-cl/work/bench-env/bin/python",
+        "-m",
+        "pytest",
+        "-q",
+        "--tb=short",
+        "-p",
+        "no:cacheprovider",
+        "-p",
+        "pytest_asyncio.plugin",
+        "--asyncio-mode=auto",
+        "."
+      ],
+      "cwd": "/var/folders/hn/d65rfm890ng16gj3hchtg5yc0000gn/T/taut-benchmark-4td4y4e9/async",
+      "expected_count": 128,
+      "samples": [
+        {
+          "seconds": 1.6975990409846418,
+          "round": 2,
+          "reported_count": 128,
+          "completed_count": 128,
+          "test_processes": 1,
+          "returncode": 0
+        },
+        {
+          "seconds": 1.7215877499838825,
+          "round": 3,
+          "reported_count": 128,
+          "completed_count": 128,
+          "test_processes": 1,
+          "returncode": 0
+        },
+        {
+          "seconds": 1.7251327499980107,
+          "round": 4,
+          "reported_count": 128,
+          "completed_count": 128,
+          "test_processes": 1,
+          "returncode": 0
+        },
+        {
+          "seconds": 1.833898750017397,
+          "round": 5,
+          "reported_count": 128,
+          "completed_count": 128,
+          "test_processes": 1,
+          "returncode": 0
+        },
+        {
+          "seconds": 1.679138083010912,
+          "round": 6,
+          "reported_count": 128,
+          "completed_count": 128,
+          "test_processes": 1,
+          "returncode": 0
+        },
+        {
+          "seconds": 1.7792466660030186,
+          "round": 7,
+          "reported_count": 128,
+          "completed_count": 128,
+          "test_processes": 1,
+          "returncode": 0
+        },
+        {
+          "seconds": 1.777700749982614,
+          "round": 8,
+          "reported_count": 128,
+          "completed_count": 128,
+          "test_processes": 1,
+          "returncode": 0
+        }
+      ],
+      "warmups": [
+        {
+          "seconds": 1.7496156659908593,
+          "round": 0,
+          "reported_count": 128,
+          "completed_count": 128,
+          "test_processes": 1,
+          "returncode": 0
+        },
+        {
+          "seconds": 1.7272365000098944,
+          "round": 1,
+          "reported_count": 128,
+          "completed_count": 128,
+          "test_processes": 1,
+          "returncode": 0
+        }
+      ],
+      "median_seconds": 1.7251327499980107,
+      "min_seconds": 1.679138083010912,
+      "max_seconds": 1.833898750017397
+    },
+    {
+      "workload": "async",
+      "runner": "pytest-xdist-j4",
+      "command": [
+        "/Users/json/Documents/Codex/2026-10-03/go-cl/work/bench-env/bin/python",
+        "-m",
+        "pytest",
+        "-q",
+        "--tb=short",
+        "-p",
+        "no:cacheprovider",
+        "-p",
+        "pytest_asyncio.plugin",
+        "--asyncio-mode=auto",
+        "-p",
+        "xdist.plugin",
+        "-n",
+        "4",
+        "."
+      ],
+      "cwd": "/var/folders/hn/d65rfm890ng16gj3hchtg5yc0000gn/T/taut-benchmark-4td4y4e9/async",
+      "expected_count": 128,
+      "samples": [
+        {
+          "seconds": 0.7501758330035955,
+          "round": 2,
+          "reported_count": 128,
+          "completed_count": 128,
+          "test_processes": 4,
+          "returncode": 0
+        },
+        {
+          "seconds": 0.7553273329976946,
+          "round": 3,
+          "reported_count": 128,
+          "completed_count": 128,
+          "test_processes": 4,
+          "returncode": 0
+        },
+        {
+          "seconds": 0.7447949170018546,
+          "round": 4,
+          "reported_count": 128,
+          "completed_count": 128,
+          "test_processes": 4,
+          "returncode": 0
+        },
+        {
+          "seconds": 0.7233090419904329,
+          "round": 5,
+          "reported_count": 128,
+          "completed_count": 128,
+          "test_processes": 4,
+          "returncode": 0
+        },
+        {
+          "seconds": 0.7372846670041326,
+          "round": 6,
+          "reported_count": 128,
+          "completed_count": 128,
+          "test_processes": 4,
+          "returncode": 0
+        },
+        {
+          "seconds": 0.7321749169786926,
+          "round": 7,
+          "reported_count": 128,
+          "completed_count": 128,
+          "test_processes": 4,
+          "returncode": 0
+        },
+        {
+          "seconds": 0.7623512920108624,
+          "round": 8,
+          "reported_count": 128,
+          "completed_count": 128,
+          "test_processes": 4,
+          "returncode": 0
+        }
+      ],
+      "warmups": [
+        {
+          "seconds": 0.7646093750081491,
+          "round": 0,
+          "reported_count": 128,
+          "completed_count": 128,
+          "test_processes": 4,
+          "returncode": 0
+        },
+        {
+          "seconds": 0.7415699170087464,
+          "round": 1,
+          "reported_count": 128,
+          "completed_count": 128,
+          "test_processes": 4,
+          "returncode": 0
+        }
+      ],
+      "median_seconds": 0.7447949170018546,
+      "min_seconds": 0.7233090419904329,
+      "max_seconds": 0.7623512920108624
+    }
+  ],
+  "status": "complete"
+}

@@ -75,6 +75,8 @@ Function-scoped fixtures can depend on other fixtures, use `yield` for cleanup, 
 
 The [benchmark harness](benches/README.md) compares complete runs against pytest, pytest-asyncio, and pytest-xdist across minimal, CPU, blocking, threaded, and async workloads. It checks that every expected test body completed exactly once before accepting a timing.
 
+See the [2026-10-03 measurements and validation](benches/results/2026-10-03/benchmark-report.md) for full-run results, concurrent async execution, startup, raw samples, and compatibility limits.
+
 Pytest-asyncio works with xdist: async tests can run across worker processes. Taut additionally supports opt-in concurrent async tests inside each worker's event loop. Performance depends on test behavior, worker count, and isolation; collection-only timings do not measure a full test run.
 
 ## Development

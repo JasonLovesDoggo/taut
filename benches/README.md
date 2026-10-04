@@ -1,5 +1,7 @@
 # Benchmarks
 
+The [2026-10-03 report](results/2026-10-03/benchmark-report.md) records the current development implementation against the original runner and pytest, with raw samples, validation, and measurement limits.
+
 Build an optimized binary, then run the harness in an isolated Python environment:
 
 ```sh
