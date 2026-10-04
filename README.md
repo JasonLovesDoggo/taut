@@ -35,16 +35,16 @@ No async plugin or test marker required.
 
 ```sh
 taut                                       # Full suite, parallel workers
-taut tests/test_api.py::TestAPI::test_get    # One exact test
-taut tests -k 'test_*login'                  # Name substring or glob
-taut list tests                            # Collect without importing Python
+taut test_example.py::test_async            # One exact test
+taut -k 'test_*addition'                    # Name substring or glob
+taut list .                                # Collect without importing Python
 taut -j 4                                  # Four Python worker processes
 taut --async-concurrency 8                  # Up to eight async tests per worker
 taut --no-parallel                          # Sequential execution
 taut --isolation process-per-test           # Fresh Python process for each test
 taut --timeout 10 -x                        # Bound each test; stop after failure
 taut --json > results.json                  # Structured results and captured output
-taut watch tests                           # Rerun when Python/config files change
+taut watch .                               # Rerun when Python/config files change
 taut --changed                             # Opt in to dependency-based selection
 ```
 

@@ -34,7 +34,7 @@ source .venv/bin/activate
 
 On Windows PowerShell, activate with `.venv\Scripts\Activate.ps1`.
 
-Install taut alongside the dependencies your tests need. `python -m taut` runs tests with that Python interpreter; the native command also discovers active and project virtual environments. Override it explicitly with `taut --python /path/to/python` when needed.
+Install taut alongside the dependencies your tests need. `python -m taut` defaults to that Python interpreter unless you explicitly select another; the native command also discovers active and project virtual environments. Override it explicitly with `taut --python /path/to/python` when needed.
 
 ## Build from source
 

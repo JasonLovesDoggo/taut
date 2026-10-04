@@ -46,7 +46,7 @@ Interpreter selection uses this order:
 5. The nearest `.venv` in the current directory or its ancestors.
 6. `python3` on PATH, or `python` on Windows.
 
-`python -m taut` passes its interpreter through `TAUT_PYTHON`. A relative configuration path such as `.venv/bin/python` is resolved against its `pyproject.toml`; a bare command such as `python3.13` uses PATH. On Windows, a virtual environment's interpreter is `.venv\Scripts\python.exe`.
+`python -m taut` supplies its interpreter through `TAUT_PYTHON` when that variable is unset. Explicit interpreter configuration still takes precedence. A relative configuration path such as `.venv/bin/python` is resolved against its `pyproject.toml`; a bare command such as `python3.13` uses PATH. On Windows, a virtual environment's interpreter is `.venv\Scripts\python.exe`.
 
 ## Changed runs
 
