@@ -43,6 +43,6 @@ The default run does not skip previously passing tests. `--changed` explicitly e
 
 ## Performance you can check
 
-Use the repository's [benchmark harness](https://github.com/JasonLovesDoggo/taut/blob/main/benches/README.md) to compare full execution against pytest, pytest-asyncio, and pytest-xdist on your machine. It measures several workloads and rejects runs with missing, duplicated, or incomplete test bodies. Static collection and full execution are reported separately.
+Use the repository's [benchmark harness](https://github.com/JasonLovesDoggo/taut/blob/main/benches/compare_execution.py) to compare full execution against pytest, pytest-asyncio, and pytest-xdist on your machine. It measures several workloads and rejects runs with missing, duplicated, or incomplete test bodies. Static collection and full execution are reported separately.
 
 Pytest-asyncio supports xdist's process-based parallelism. Taut's additional async concurrency setting overlaps independent tests within each worker's event loop; it solves a different scheduling problem.
