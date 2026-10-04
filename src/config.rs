@@ -39,10 +39,11 @@ impl Config {
                 .with_context(|| format!("cannot read {}", path.display()))?;
             let mut config = Self::parse(&content)
                 .with_context(|| format!("invalid configuration in {}", path.display()))?;
-            if let Some(python) = &config.python {
-                if python.is_relative() && python.components().count() > 1 {
-                    config.python = Some(directory.join(python));
-                }
+            if let Some(python) = &config.python
+                && python.is_relative()
+                && python.components().count() > 1
+            {
+                config.python = Some(directory.join(python));
             }
             return Ok(config);
         }
@@ -64,10 +65,10 @@ impl Config {
         if config.async_concurrency == Some(0) {
             bail!("async-concurrency must be greater than zero");
         }
-        if let Some(value) = &config.isolation {
-            if !matches!(value.as_str(), "process-per-run" | "process-per-test") {
-                bail!("isolation must be process-per-run or process-per-test");
-            }
+        if let Some(value) = &config.isolation
+            && !matches!(value.as_str(), "process-per-run" | "process-per-test")
+        {
+            bail!("isolation must be process-per-run or process-per-test");
         }
         if let Some(timeout) = config.timeout {
             parse_timeout(timeout)?;
