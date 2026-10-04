@@ -90,6 +90,8 @@ def test_total(total):
     assert total == 6
 ```
 
+Declare fixtures at module scope in a test file or `conftest.py`. Fixtures declared on test classes or inherited bases, including autouse fixtures, are unsupported and raise an error.
+
 Put shared fixtures in `conftest.py`. Taut loads applicable files from the project root down to the test directory, then test-module fixtures. A nearer definition overrides an outer one. Fixture loading happens during execution, not `taut list`.
 
 ```python

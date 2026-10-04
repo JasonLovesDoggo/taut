@@ -62,4 +62,6 @@ They are unnecessary for the default parallel mode. Use `--no-parallel` to run t
 
 ## Static collection
 
+`pytest.mark.usefixtures` and `pytest.mark.xfail` are unsupported and raise errors. Request fixtures through test arguments or `@fixture(autouse=True)` instead of `usefixtures`.
+
 Taut reads supported decorator syntax while collecting tests. Prefer direct imports and literal arguments as shown above. Runtime-generated markers, arbitrary decorator wrappers, and pytest plugins are not a general compatibility layer.
