@@ -469,3 +469,90 @@ fn native_capture_fallback_uses_independent_reader_offsets() {
     assert_eq!(results.results[0].stdout.as_deref(), Some("first"));
     assert_eq!(results.results[1].stdout.as_deref(), Some("second"));
 }
+
+#[test]
+fn unhandled_joined_thread_exception_fails_owning_test() {
+    let (_dir, file) = suite(
+        "import threading\ndef bad(): raise AssertionError('thread assertion')\ndef test_thread():\n thread=threading.Thread(target=bad)\n thread.start()\n thread.join()\ndef test_next(): pass\n",
+    );
+    let results = run_tests_with_options(
+        &[item(&file, "test_thread"), item(&file, "test_next")],
+        &options(),
+        |_| {},
+    )
+    .unwrap();
+    assert_eq!(results.failed_count(), 1, "{:?}", results.results);
+    assert!(
+        results.results[0]
+            .error
+            .as_ref()
+            .unwrap()
+            .message
+            .contains("thread assertion")
+    );
+    assert!(results.results[1].passed);
+}
+
+#[test]
+fn to_thread_handled_exception_does_not_fail_another_test() {
+    let (_dir, file) = suite(
+        "import asyncio\ndef bad(): raise ValueError('expected')\nasync def test_caught():\n try: await asyncio.to_thread(bad)\n except ValueError: pass\nasync def test_ok(): assert await asyncio.to_thread(lambda: 42) == 42\n",
+    );
+    let options = RunOptions {
+        async_concurrency: 2,
+        ..options()
+    };
+    let results = run_tests_with_options(
+        &[item(&file, "test_caught"), item(&file, "test_ok")],
+        &options,
+        |_| {},
+    )
+    .unwrap();
+    assert!(results.all_passed(), "{:?}", results.results);
+}
+
+#[test]
+fn async_generators_are_closed_before_the_next_test() {
+    let (_dir, file) = suite(
+        "import asyncio\nclosed=False\nasync def stream():\n global closed\n try: yield 1\n finally: closed=True\nasync def test_generator():\n generator=stream()\n assert await anext(generator)==1\nasync def test_next(): assert closed\n",
+    );
+    let results = run_tests_with_options(
+        &[item(&file, "test_generator"), item(&file, "test_next")],
+        &options(),
+        |_| {},
+    )
+    .unwrap();
+    assert!(results.all_passed(), "{:?}", results.results);
+}
+
+#[test]
+fn async_generator_cleanup_failure_fails_owning_test() {
+    let (_dir, file) = suite(
+        "async def stream():\n try: yield 1\n finally: raise ValueError('generator cleanup failed')\nasync def test_generator():\n generator=stream()\n assert await anext(generator)==1\n",
+    );
+    let results =
+        run_tests_with_options(&[item(&file, "test_generator")], &options(), |_| {}).unwrap();
+    assert_eq!(results.failed_count(), 1, "{:?}", results.results);
+    assert!(
+        results.results[0]
+            .error
+            .as_ref()
+            .unwrap()
+            .message
+            .contains("generator cleanup failed")
+    );
+}
+
+#[test]
+fn explicit_context_timers_are_owned_and_cancelled() {
+    let (_dir, file) = suite(
+        "import asyncio, contextvars\nchanged=False\ndef timer():\n global changed\n changed=True\nasync def test_timer(): asyncio.get_running_loop().call_later(0.03,timer,context=contextvars.Context())\nasync def test_next():\n await asyncio.sleep(0.05)\n assert not changed\n",
+    );
+    let results = run_tests_with_options(
+        &[item(&file, "test_timer"), item(&file, "test_next")],
+        &options(),
+        |_| {},
+    )
+    .unwrap();
+    assert!(results.all_passed(), "{:?}", results.results);
+}

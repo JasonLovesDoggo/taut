@@ -7,6 +7,8 @@ import os
 import struct
 import sys
 import tempfile
+import threading
+import weakref
 import time
 import traceback
 import types
@@ -113,6 +115,29 @@ sys.stdout, sys.stderr = _outputs
 sys.__stdout__, sys.__stderr__ = _outputs
 
 
+_original_thread_start = threading.Thread.start
+_original_thread_error = threading.excepthook
+
+
+def _thread_start(thread, *args, **kwargs):
+    owner = _owner.get() or _single_owner
+    if owner is not None:
+        thread._taut_owner = weakref.ref(owner)
+    return _original_thread_start(thread, *args, **kwargs)
+
+
+def _thread_error(args):
+    reference = getattr(args.thread, "_taut_owner", None)
+    owner = reference() if reference is not None else None
+    if owner is not None:
+        owner.record(args.exc_value, "thread")
+    _original_thread_error(args)
+
+
+threading.Thread.start = _thread_start
+threading.excepthook = _thread_error
+
+
 def _send(value):
     data = json.dumps(value, ensure_ascii=True, separators=(",", ":")).encode()
     _protocol.write(struct.pack("<I", len(data)))
@@ -204,6 +229,7 @@ class Case:
         self.target = None
         self.instance = None
         self.tasks = set()
+        self.generators = set()
         self.coverage = {} if coverage else None
 
     def record(self, exc, stage):
@@ -279,6 +305,40 @@ def _ensure_loop():
         _asyncio = asyncio
         _loop = asyncio.new_event_loop()
 
+        def owned_context(callback, context):
+            owner = _owner.get()
+            if owner is None or context is None or context.get(_owner) is not None:
+                return context
+            function = getattr(callback, "func", callback)
+            # asyncio explicitly preserves the awaiting task's context. Do not
+            # inject a child's context into its parent's completion callbacks.
+            if isinstance(getattr(function, "__self__", None), asyncio.Task) or getattr(function, "__module__", "").startswith("asyncio"):
+                return context
+            context = context.copy()
+            context.run(_owner.set, owner)
+            context.run(_capture.set, owner.buffers)
+            return context
+
+        original_soon = _loop.call_soon
+        original_at = _loop.call_at
+        original_firstiter = _loop._asyncgen_firstiter_hook
+
+        def call_soon(callback, *args, context=None):
+            return original_soon(callback, *args, context=owned_context(callback, context))
+
+        def call_at(when, callback, *args, context=None):
+            return original_at(when, callback, *args, context=owned_context(callback, context))
+
+        def firstiter(generator):
+            original_firstiter(generator)
+            owner = _owner.get()
+            if owner is not None:
+                owner.generators.add(generator)
+
+        _loop.call_soon = call_soon
+        _loop.call_at = call_at
+        _loop._asyncgen_firstiter_hook = firstiter
+
         def factory(loop, coro, **kwargs):
             context = kwargs.get("context")
             owner = (context.get(_owner) if context is not None else None) or _owner.get()
@@ -323,7 +383,9 @@ async def _cleanup_tasks(case):
     while True:
         tasks = [task for task in case.tasks if task is not current]
         case.tasks.difference_update(tasks)
-        if not tasks:
+        generators = [generator for generator in case.generators if generator.ag_frame is not None]
+        case.generators.clear()
+        if not tasks and not generators:
             break
         # asyncio clears _log_traceback when the test has retrieved an exception.
         # Re-failing intentionally caught task exceptions would be a false failure.
@@ -331,13 +393,19 @@ async def _cleanup_tasks(case):
         for task in tasks:
             if not task.done():
                 task.cancel()
+        closing = {_asyncio.ensure_future(generator.aclose()) for generator in generators}
+        case.tasks.difference_update(closing)
+        report.update(closing)
+        tasks.extend(closing)
         done, pending = await _asyncio.wait(tasks, timeout=max(0, deadline - time.monotonic()))
         for task in done:
             if not task.cancelled():
                 value = task.exception()
                 if task in report and value is not None:
-                    case.record(value, "background task")
+                    case.record(value, "async generator cleanup" if task in closing else "background task")
         if pending or (case.tasks and time.monotonic() >= deadline):
+            for task in pending:
+                task.cancel()
             case.record(RuntimeError("Background tasks did not stop within 250ms after cancellation; worker will be replaced"), "cleanup")
             _dirty = True
             break
@@ -443,7 +511,7 @@ def _sync_case(case):
                     _call_sync(lambda: cleanup(*args, **kwargs), case)
                 except BaseException as exc:
                     case.record(exc, "cleanup")
-        if case.tasks:
+        if case.tasks or case.generators:
             _ensure_loop().run_until_complete(_cleanup_tasks(case))
         _single_owner = None
         _owner.reset(owner)
