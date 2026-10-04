@@ -7,7 +7,7 @@ use notify::{RecursiveMode, Watcher};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -165,16 +165,20 @@ fn run_with_parsed_args(args: Args) -> i32 {
     match result {
         Ok(code) => code,
         Err(error) => {
-            if args.options.json {
-                println!(
-                    "{}",
-                    serde_json::json!({"schema_version": 1, "error": format!("{error:#}")})
-                );
-            } else {
-                eprintln!("error: {error:#}");
-            }
+            print_error(&error, args.options.json);
             2
         }
+    }
+}
+
+fn print_error(error: &anyhow::Error, json: bool) {
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({"schema_version": 1, "error": format!("{error:#}")})
+        );
+    } else {
+        eprintln!("error: {error:#}");
     }
 }
 
@@ -282,6 +286,7 @@ fn execution_context(options: &runner::RunOptions) -> String {
 }
 
 fn execute(paths: &[PathBuf], options: &Options) -> Result<i32> {
+    let started = Instant::now();
     validate_paths(paths)?;
     let runtime = runner_options(options, config::Config::load(&selection_path(&paths[0]))?)?;
     let all_tests = collect(paths, options)?;
@@ -290,7 +295,7 @@ fn execute(paths: &[PathBuf], options: &Options) -> Result<i32> {
             output::print_json(
                 &runner::TestResults {
                     results: Vec::new(),
-                    total_duration: Duration::ZERO,
+                    total_duration: started.elapsed(),
                 },
                 0,
                 &[],
@@ -350,7 +355,7 @@ fn execute(paths: &[PathBuf], options: &Options) -> Result<i32> {
     skipped.extend(run.results);
     let results = runner::TestResults {
         results: skipped,
-        total_duration: run.total_duration,
+        total_duration: started.elapsed(),
     };
     if options.json {
         output::print_json(&results, collected, &selected_out);
@@ -398,7 +403,9 @@ fn watch_tests(paths: &[PathBuf], options: &Options) -> Result<i32> {
     if !options.json && !options.quiet {
         eprintln!("Watching for changes... (Ctrl+C to stop)");
     }
-    execute(paths, options)?;
+    if let Err(error) = execute(paths, options) {
+        print_error(&error, options.json);
+    }
     loop {
         let first = rx.recv().context("filesystem watcher disconnected")??;
         let mut changed = BTreeSet::new();
@@ -416,14 +423,7 @@ fn watch_tests(paths: &[PathBuf], options: &Options) -> Result<i32> {
             }
         }
         if let Err(error) = execute(paths, options) {
-            if options.json {
-                println!(
-                    "{}",
-                    serde_json::json!({"schema_version": 1, "error": format!("{error:#}")})
-                );
-            } else {
-                eprintln!("error: {error:#}");
-            }
+            print_error(&error, options.json);
         }
     }
 }

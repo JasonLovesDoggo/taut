@@ -212,3 +212,52 @@ fn incompatible_concurrency_settings_are_rejected() {
         );
     }
 }
+
+#[test]
+fn watch_recovers_after_an_initial_syntax_error_is_fixed() {
+    use std::io::{BufRead, BufReader};
+    use std::process::Stdio;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let project = TempDir::new().unwrap();
+    let test_file = project.path().join("test_watch.py");
+    fs::write(&test_file, "def test_broken(:\n").unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_taut"))
+        .args(["watch", "-q", "."])
+        .current_dir(project.path())
+        .env("NO_COLOR", "1")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let stdout = child.stdout.take().unwrap();
+    let stderr = child.stderr.take().unwrap();
+    let (tx, rx) = mpsc::channel();
+    let errors = tx.clone();
+    let stdout_reader = std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            let _ = tx.send((false, line));
+        }
+    });
+    let stderr_reader = std::thread::spawn(move || {
+        for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+            let _ = errors.send((true, line));
+        }
+    });
+    let initial = rx.recv_timeout(Duration::from_secs(10)).ok();
+    let saw_error = initial
+        .as_ref()
+        .is_some_and(|(error, line)| *error && line.contains("error:"));
+    fs::write(&test_file, "def test_fixed(): pass\n").unwrap();
+    let repaired = rx.recv_timeout(Duration::from_secs(10)).ok();
+    let _ = child.kill();
+    let _ = child.wait();
+    stdout_reader.join().unwrap();
+    stderr_reader.join().unwrap();
+    assert!(saw_error, "expected initial collection error: {initial:?}");
+    assert!(
+        repaired.is_some_and(|(error, line)| !error && line.contains("1 passed")),
+        "watch must stay running after a collection failure"
+    );
+}
