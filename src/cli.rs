@@ -14,12 +14,12 @@ use std::time::{Duration, Instant};
     name = "taut",
     version,
     about = "Tests, without the overhead.",
-    after_help = "Exit codes: 0 passed, 1 test failures, 2 usage or configuration error, 5 no tests collected."
+    after_help = "Common commands:\n  taut                             Run tests in the current directory\n  taut tests/test_api.py::test_get  Run one exact test ID\n  taut -k 'login*'                  Run names matching a substring/glob\n  taut list tests                  List test IDs without importing Python\n  taut watch tests                 Re-run tests when files change\n\nExit codes: 0 passed, 1 test failures, 2 usage or configuration error, 5 no tests collected."
 )]
 pub struct Args {
     #[command(subcommand)]
     pub command: Option<Commands>,
-    /// Test files or directories [default: .]
+    /// Test files, directories, or exact file.py::test_name IDs [default: .]
     pub paths: Vec<PathBuf>,
     #[command(flatten)]
     pub options: Options,
@@ -30,44 +30,60 @@ pub struct Args {
 
 #[derive(clap::Args, Debug, Default)]
 pub struct Options {
-    /// Filter tests by name expression
-    #[arg(short = 'k', long, global = true)]
+    /// Case-insensitive name substring/glob (* and ?); no boolean expressions
+    #[arg(short = 'k', long, global = true, help_heading = "Selection")]
     pub filter: Option<String>,
     /// Print individual test names and timings
-    #[arg(short, long, global = true, conflicts_with_all = ["quiet", "json"])]
+    #[arg(short, long, global = true, help_heading = "Output", conflicts_with_all = ["quiet", "json"])]
     pub verbose: bool,
     /// Print only failures and the final summary
-    #[arg(short, long, global = true, conflicts_with = "json")]
+    #[arg(
+        short,
+        long,
+        global = true,
+        help_heading = "Output",
+        conflicts_with = "json"
+    )]
     pub quiet: bool,
     /// Emit one machine-readable JSON document
-    #[arg(long, global = true)]
+    #[arg(long, global = true, help_heading = "Output")]
     pub json: bool,
     /// Run tests sequentially
-    #[arg(long, global = true)]
+    #[arg(long, global = true, help_heading = "Execution")]
     pub no_parallel: bool,
     /// Number of worker processes [default: CPU count]
-    #[arg(short = 'j', long, global = true, value_parser = positive_usize)]
+    #[arg(short = 'j', long, global = true, help_heading = "Execution", value_parser = positive_usize)]
     pub jobs: Option<usize>,
     /// Run only tests affected by tracked dependency changes (enables tracing)
-    #[arg(long, global = true, conflicts_with = "no_cache")]
+    #[arg(
+        long,
+        global = true,
+        help_heading = "Selection",
+        conflicts_with = "no_cache"
+    )]
     pub changed: bool,
     /// Run all tests without dependency tracing (the default)
-    #[arg(long, global = true)]
+    #[arg(long, global = true, help_heading = "Selection")]
     pub no_cache: bool,
     /// Worker lifetime [default: process-per-run]
-    #[arg(long, global = true, value_enum)]
+    #[arg(long, global = true, help_heading = "Execution", value_enum)]
     pub isolation: Option<Isolation>,
     /// Python executable or path [default: active virtual environment, .venv, python3]
-    #[arg(long, global = true, value_name = "EXECUTABLE")]
+    #[arg(
+        long,
+        global = true,
+        help_heading = "Execution",
+        value_name = "EXECUTABLE"
+    )]
     pub python: Option<PathBuf>,
     /// Async tests sharing each worker's event loop [default: 1]
-    #[arg(long, global = true, value_parser = positive_usize)]
+    #[arg(long, global = true, help_heading = "Execution", value_parser = positive_usize)]
     pub async_concurrency: Option<usize>,
     /// Per-test timeout in seconds
-    #[arg(long, global = true, value_parser = timeout_seconds, value_name = "SECONDS")]
+    #[arg(long, global = true, help_heading = "Execution", value_parser = timeout_seconds, value_name = "SECONDS")]
     pub timeout: Option<f64>,
     /// Stop scheduling tests after the first failure
-    #[arg(short = 'x', long, global = true)]
+    #[arg(short = 'x', long, global = true, help_heading = "Execution")]
     pub fail_fast: bool,
 }
 
@@ -211,22 +227,61 @@ fn validate_paths(paths: &[PathBuf]) -> Result<()> {
     Ok(())
 }
 
-fn collect(paths: &[PathBuf], options: &Options) -> Result<Vec<discovery::TestItem>> {
+struct Collection {
+    tests: Vec<discovery::TestItem>,
+    before_filter: usize,
+}
+
+fn collect(paths: &[PathBuf], options: &Options) -> Result<Collection> {
     validate_paths(paths)?;
-    discovery::collect_tests(paths, options.filter.as_deref())
+    let mut tests = discovery::collect_tests(paths, None)?;
+    let before_filter = tests.len();
+    discovery::apply_filter(&mut tests, options.filter.as_deref())?;
+    Ok(Collection {
+        tests,
+        before_filter,
+    })
+}
+
+fn print_empty_collection(paths: &[PathBuf], options: &Options, before_filter: usize) {
+    if let Some(pattern) = options.filter.as_deref().filter(|_| before_filter > 0) {
+        println!("No tests matched filter {pattern:?} ({before_filter} tests before filtering).");
+        println!("-k matches a case-insensitive name substring/glob, not a boolean expression.");
+    } else {
+        println!("No tests discovered.");
+        println!(
+            "Directory discovery uses test_*.py, _test*.py, or *_test.py files and test_* or _test* functions."
+        );
+        println!("Pass a Python file explicitly to inspect other filenames.");
+    }
+    println!(
+        "Searched: {}",
+        paths
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    println!(
+        "List available test IDs: {}",
+        discovery::list_command(paths)
+    );
 }
 
 fn list_tests(paths: &[PathBuf], options: &Options) -> Result<i32> {
     validate_paths(paths)?;
     config::Config::load(&selection_path(&paths[0]))?;
-    let tests = collect(paths, options)?;
+    let Collection {
+        tests,
+        before_filter,
+    } = collect(paths, options)?;
     if options.json {
         println!(
             "{}",
             serde_json::json!({"schema_version": 1, "tests": tests.iter().map(|t| t.id()).collect::<Vec<_>>(), "collected": tests.len()})
         );
     } else if tests.is_empty() {
-        output::print_no_tests_found();
+        print_empty_collection(paths, options, before_filter);
     } else {
         for test in &tests {
             println!("{}", test.id());
@@ -389,7 +444,10 @@ fn execute(paths: &[PathBuf], options: &Options) -> Result<i32> {
     let started = Instant::now();
     let setup = execution_setup(paths, options)?;
     let runtime = setup.runtime;
-    let all_tests = collect(paths, options)?;
+    let Collection {
+        tests: all_tests,
+        before_filter,
+    } = collect(paths, options)?;
     if all_tests.is_empty() {
         if options.json {
             output::print_json(
@@ -401,7 +459,7 @@ fn execute(paths: &[PathBuf], options: &Options) -> Result<i32> {
                 &[],
             );
         } else {
-            output::print_no_tests_found();
+            print_empty_collection(paths, options, before_filter);
         }
         return Ok(5);
     }

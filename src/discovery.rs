@@ -5,6 +5,7 @@ use rustpython_parser::{Parse, ast};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use unicode_width::UnicodeWidthStr;
 use walkdir::WalkDir;
 
 mod classes;
@@ -483,8 +484,33 @@ fn reject_callable_test_aliases(suite: &[ast::Stmt], path: &Path, lines: &LineIn
 pub fn extract_tests_from_file(path: &Path) -> Result<Vec<TestItem>> {
     let source = std::fs::read_to_string(path)
         .with_context(|| format!("Failed to read {}", path.display()))?;
-    let suite = ast::Suite::parse(&source, &path.to_string_lossy())
-        .map_err(|error| anyhow::anyhow!("Parse error in {}: {}", path.display(), error))?;
+    let suite = ast::Suite::parse(&source, &path.to_string_lossy()).map_err(|error| {
+        let mut locator = rustpython_parser::source_code::RandomLocator::new(&source);
+        let location = locator.locate(error.offset);
+        let source_code = locator.to_source_code();
+        let source_line = source_code
+            .line_text(location.row)
+            .trim_end_matches(['\r', '\n'])
+            .trim_start_matches('\u{feff}');
+        let prefix: String = source_line
+            .chars()
+            .take(location.column.get() as usize - 1)
+            .collect();
+        let caret_padding = prefix
+            .split('\t')
+            .map(|segment| " ".repeat(segment.width()))
+            .collect::<Vec<_>>()
+            .join("\t");
+        anyhow::anyhow!(
+            "CollectionSyntaxError: {}:{}:{}: {}\n  {}\n  {}^",
+            path.display(),
+            location.row.get(),
+            location.column.get(),
+            error.error,
+            source_line,
+            caret_padding
+        )
+    })?;
     let lines = LineIndex::new(&source);
     reject_callable_test_aliases(&suite, path, &lines)?;
     let classes = classes::Classes::needed(&suite).then(|| classes::Classes::new(&suite));
@@ -509,7 +535,7 @@ pub fn extract_tests_from_file(path: &Path) -> Result<Vec<TestItem>> {
     Ok(items)
 }
 
-fn apply_filter(items: &mut Vec<TestItem>, pattern: Option<&str>) -> Result<()> {
+pub(crate) fn apply_filter(items: &mut Vec<TestItem>, pattern: Option<&str>) -> Result<()> {
     if let Some(pattern) = pattern.filter(|pattern| !pattern.is_empty()) {
         let filter = TestFilter::new(pattern)
             .with_context(|| format!("Invalid filter pattern '{pattern}'"))?;
@@ -549,11 +575,41 @@ pub fn selection_path(path: &Path) -> PathBuf {
         .map_or_else(|| path.to_path_buf(), |(file, _)| PathBuf::from(file))
 }
 
+/// A pasteable command that shows the unfiltered IDs behind a selection.
+pub(crate) fn list_command(paths: &[PathBuf]) -> String {
+    let mut seen = HashSet::new();
+    let arguments = paths
+        .iter()
+        .map(|path| selection_path(path))
+        .filter(|path| seen.insert(path.clone()))
+        .map(|path| {
+            let value = path.to_string_lossy();
+            if !value.is_empty()
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"_./-".contains(&byte))
+            {
+                value.into_owned()
+            } else {
+                let escaped = if cfg!(windows) {
+                    value.replace('\'', "''")
+                } else {
+                    value.replace('\'', "'\\''")
+                };
+                format!("'{escaped}'")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!("taut list -- {arguments}")
+}
+
 struct NodeSelector {
     file: PathBuf,
     nodes: Vec<String>,
     display: String,
     matched: bool,
+    available: Vec<String>,
 }
 
 impl NodeSelector {
@@ -603,6 +659,7 @@ pub fn collect_tests(paths: &[PathBuf], filter_pattern: Option<&str>) -> Result<
                 nodes,
                 display: path.display().to_string(),
                 matched: false,
+                available: Vec::new(),
             });
         } else {
             roots.push(path.clone());
@@ -646,6 +703,9 @@ pub fn collect_tests(paths: &[PathBuf], filter_pattern: Option<&str>) -> Result<
             let mut selected = all;
             for &index in file_selectors {
                 let selector = &mut selectors[index];
+                if selector.available.len() < 5 {
+                    selector.available.push(item.id());
+                }
                 if selector.matches(&item) {
                     selector.matched = true;
                     selected = true;
@@ -658,9 +718,19 @@ pub fn collect_tests(paths: &[PathBuf], filter_pattern: Option<&str>) -> Result<
     }
     for selector in selectors {
         if !selector.matched {
+            let available = if selector.available.is_empty() {
+                "No tests were discovered in this file.".to_owned()
+            } else {
+                format!(
+                    "Available IDs in this file (up to 5):\n  {}",
+                    selector.available.join("\n  ")
+                )
+            };
             bail!(
-                "Test selector '{}' did not match any test",
-                selector.display
+                "Test selector '{}' did not match any test. Positional node IDs must match exactly.\n{}\nList all test IDs: {}",
+                selector.display,
+                available,
+                list_command(&[PathBuf::from(&selector.display)])
             );
         }
     }

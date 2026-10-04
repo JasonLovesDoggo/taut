@@ -218,7 +218,7 @@ fn watch_recovers_after_an_initial_syntax_error_is_fixed() {
     use std::io::{BufRead, BufReader};
     use std::process::Stdio;
     use std::sync::mpsc;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     let project = TempDir::new().unwrap();
     let test_file = project.path().join("test_watch.py");
@@ -250,14 +250,25 @@ fn watch_recovers_after_an_initial_syntax_error_is_fixed() {
         .as_ref()
         .is_some_and(|(error, line)| *error && line.contains("error:"));
     fs::write(&test_file, "def test_fixed(): pass\n").unwrap();
-    let repaired = rx.recv_timeout(Duration::from_secs(10)).ok();
+    // Collection errors include source and caret lines; wait for the repaired
+    // run instead of assuming the next line belongs to stdout.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut repaired = false;
+    while let Ok((error, line)) =
+        rx.recv_timeout(deadline.saturating_duration_since(Instant::now()))
+    {
+        if !error && line.contains("1 passed") {
+            repaired = true;
+            break;
+        }
+    }
     let _ = child.kill();
     let _ = child.wait();
     stdout_reader.join().unwrap();
     stderr_reader.join().unwrap();
     assert!(saw_error, "expected initial collection error: {initial:?}");
     assert!(
-        repaired.is_some_and(|(error, line)| !error && line.contains("1 passed")),
+        repaired,
         "watch must stay running after a collection failure"
     );
 }

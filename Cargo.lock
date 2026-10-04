@@ -1170,6 +1170,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "toml",
+ "unicode-width",
  "walkdir",
  "xxhash-rust",
 ]
