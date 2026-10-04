@@ -250,11 +250,11 @@ def _fixture_boundary(filename):
         parent = directory
         while True:
             parents.append(parent)
-            if any(os.path.exists(os.path.join(parent, marker)) for marker in ("pyproject.toml", "pytest.ini", "setup.cfg", "setup.py", ".git")) or parent == _INITIAL_CWD:
+            if any(os.path.exists(os.path.join(parent, marker)) for marker in ("pyproject.toml", "pytest.ini", "setup.cfg", "setup.py", ".git")):
                 break
             next_parent = os.path.dirname(parent)
             if next_parent == parent:
-                parents = [directory]
+                parents = parents[:parents.index(_INITIAL_CWD) + 1] if _INITIAL_CWD in parents else [directory]
                 break
             parent = next_parent
         _fixture_directories[directory] = (parents[-1], any(os.path.isfile(os.path.join(parent, "conftest.py")) for parent in parents))
@@ -398,6 +398,9 @@ class Case:
             if declarations and (len(set(names)) != len(names) or set(names) != set(self.kwargs)):
                 raise TypeError("Parametrize decorator was not fully expanded during collection; use @parametrize or @taut.parametrize directly with literal values and unique argument names")
             for value in (module, cls, target):
+                for mark in _pytest_marks(value):
+                    if getattr(mark, "name", None) in ("usefixtures", "xfail"):
+                        raise TypeError("pytest " + mark.name + " metadata is unsupported; use explicit fixture arguments or supported unittest expected-failure semantics")
                 if getattr(value, "__unittest_skip__", False) or getattr(value, "_taut_skip", False):
                     self.skip = getattr(value, "__unittest_skip_why__", None) or getattr(value, "_taut_skip_reason", "")
                     return
@@ -414,10 +417,15 @@ class Case:
                     self.instance = cls()
                 target = getattr(self.instance, self.request["function"])
             self.target = target
-            for name in ("setup_module", "teardown_module"):
+            for name in ("setup_module", "teardown_module", "setUpModule", "tearDownModule"):
                 if callable(getattr(module, name, None)):
                     raise TypeError(name + " hooks are unsupported; use function-scoped @fixture setup and teardown")
             if cls is not None:
+                for base in cls.__mro__:
+                    for name, value in vars(base).items():
+                        function = getattr(value, "__func__", value)
+                        if any(getattr(function, attribute, None) is not None for attribute in ("__taut_fixture__", "_fixture_function_marker", "_pytestfixturefunction")):
+                            raise TypeError("Class fixture " + name + " is unsupported; declare function-scoped fixtures at module level")
                 for name in ("setup_class", "teardown_class", "setUpClass", "tearDownClass"):
                     value = getattr(cls, name, None)
                     if callable(value) and not (self.unittest and getattr(value, "__module__", "") == "unittest.case"):
@@ -471,72 +479,75 @@ class Case:
         return result
 
 
+def _instrument_loop(loop):
+    import asyncio
+    def owned_context(callback, context):
+        owner = _owner.get()
+        if owner is None or context is None or context.get(_owner) is not None:
+            return context
+        function = getattr(callback, "func", callback)
+        # asyncio explicitly preserves the awaiting task's context. Do not
+        # inject a child's context into its parent's completion callbacks.
+        if isinstance(getattr(function, "__self__", None), asyncio.Task) or getattr(function, "__module__", "").startswith("asyncio"):
+            return context
+        context = context.copy()
+        context.run(_owner.set, owner)
+        context.run(_capture.set, owner.buffers)
+        return context
+
+    original_soon = loop.call_soon
+    original_at = loop.call_at
+    original_firstiter = loop._asyncgen_firstiter_hook
+
+    def call_soon(callback, *args, context=None):
+        return original_soon(callback, *args, context=owned_context(callback, context))
+
+    def call_at(when, callback, *args, context=None):
+        return original_at(when, callback, *args, context=owned_context(callback, context))
+
+    def firstiter(generator):
+        original_firstiter(generator)
+        owner = _owner.get()
+        if owner is not None:
+            owner.generators.add(generator)
+
+    loop.call_soon = call_soon
+    loop.call_at = call_at
+    loop._asyncgen_firstiter_hook = firstiter
+
+    def factory(loop, coro, **kwargs):
+        context = kwargs.get("context")
+        owner = (context.get(_owner) if context is not None else None) or _owner.get()
+        if context is not None and owner is not None:
+            context = context.copy()
+            context.run(_owner.set, owner)
+            context.run(_capture.set, owner.buffers)
+            kwargs["context"] = context
+        task = asyncio.Task(coro, loop=loop, **kwargs)
+        if owner is not None:
+            owner.tasks.add(task)
+        return task
+
+    def handle_error(loop, context):
+        error = context.get("exception") or RuntimeError(context.get("message", "Unhandled event loop error"))
+        owner = _owner.get()
+        targets = [owner] if owner is not None else list(_running_cases)
+        if targets:
+            for case in targets:
+                case.record(error, "event loop callback" if owner is not None else "unattributed event loop callback")
+        else:
+            loop.default_exception_handler(context)
+
+    loop.set_exception_handler(handle_error)
+    loop.set_task_factory(factory)
+
 def _ensure_loop():
     global _loop, _asyncio
     if _loop is None:
         import asyncio
         _asyncio = asyncio
         _loop = asyncio.new_event_loop()
-
-        def owned_context(callback, context):
-            owner = _owner.get()
-            if owner is None or context is None or context.get(_owner) is not None:
-                return context
-            function = getattr(callback, "func", callback)
-            # asyncio explicitly preserves the awaiting task's context. Do not
-            # inject a child's context into its parent's completion callbacks.
-            if isinstance(getattr(function, "__self__", None), asyncio.Task) or getattr(function, "__module__", "").startswith("asyncio"):
-                return context
-            context = context.copy()
-            context.run(_owner.set, owner)
-            context.run(_capture.set, owner.buffers)
-            return context
-
-        original_soon = _loop.call_soon
-        original_at = _loop.call_at
-        original_firstiter = _loop._asyncgen_firstiter_hook
-
-        def call_soon(callback, *args, context=None):
-            return original_soon(callback, *args, context=owned_context(callback, context))
-
-        def call_at(when, callback, *args, context=None):
-            return original_at(when, callback, *args, context=owned_context(callback, context))
-
-        def firstiter(generator):
-            original_firstiter(generator)
-            owner = _owner.get()
-            if owner is not None:
-                owner.generators.add(generator)
-
-        _loop.call_soon = call_soon
-        _loop.call_at = call_at
-        _loop._asyncgen_firstiter_hook = firstiter
-
-        def factory(loop, coro, **kwargs):
-            context = kwargs.get("context")
-            owner = (context.get(_owner) if context is not None else None) or _owner.get()
-            if context is not None and owner is not None:
-                context = context.copy()
-                context.run(_owner.set, owner)
-                context.run(_capture.set, owner.buffers)
-                kwargs["context"] = context
-            task = asyncio.Task(coro, loop=loop, **kwargs)
-            if owner is not None:
-                owner.tasks.add(task)
-            return task
-
-        def handle_error(loop, context):
-            error = context.get("exception") or RuntimeError(context.get("message", "Unhandled event loop error"))
-            owner = _owner.get()
-            targets = [owner] if owner is not None else list(_running_cases)
-            if targets:
-                for case in targets:
-                    case.record(error, "event loop callback" if owner is not None else "unattributed event loop callback")
-            else:
-                loop.default_exception_handler(context)
-
-        _loop.set_exception_handler(handle_error)
-        _loop.set_task_factory(factory)
+        _instrument_loop(_loop)
     return _loop
 
 
@@ -677,6 +688,7 @@ def _call_sync(function, case):
 
 
 def _run_unittest(case):
+    global _asyncio, _dirty
     import functools
     import unittest
 
@@ -705,6 +717,42 @@ def _run_unittest(case):
         def addUnexpectedSuccess(self, test):
             case.record(AssertionError("Expected failure unexpectedly passed"), "unittest")
             super().addUnexpectedSuccess(test)
+
+    if case.isolated_asyncio:
+        import asyncio
+        _asyncio = asyncio
+
+        class OwnedRunner(asyncio.Runner):
+            def run(self, coroutine, *, context=None):
+                try:
+                    return super().run(coroutine, context=context)
+                finally:
+                    case.tasks.difference_update(task for task in tuple(case.tasks) if task.get_coro() is coroutine)
+
+            def close(self):
+                global _dirty
+                if getattr(self, "_taut_closed", False):
+                    return
+                self._taut_closed = True
+                loop = self.get_loop()
+                try:
+                    self.run(_cleanup_tasks(case))
+                    if _dirty:
+                        loop.close()
+                    else:
+                        super().close()
+                finally:
+                    case.tasks.difference_update(task for task in tuple(case.tasks) if task.get_loop() is loop)
+
+        def make_loop():
+            loop = asyncio.new_event_loop()
+            _instrument_loop(loop)
+            return loop
+
+        def setup_runner():
+            case.instance._asyncioRunner = OwnedRunner(debug=True, loop_factory=make_loop)
+
+        case.instance._setupAsyncioRunner = setup_runner
 
     target = case.target
     if case.isolated_asyncio and _is_async(target):

@@ -13,8 +13,12 @@ fn project(files: &[(&str, &str)]) -> TempDir {
     dir
 }
 fn run(dir: &Path, more: &[&str]) -> (i32, Value) {
-    let output = Command::new(env!("CARGO_BIN_EXE_taut"))
-        .args(["--json", "-j", "1", "--timeout", "3"])
+    let mut command = Command::new(env!("CARGO_BIN_EXE_taut"));
+    command.args(["--json", "-j", "1"]);
+    if !more.contains(&"--timeout") {
+        command.args(["--timeout", "3"]);
+    }
+    let output = command
         .args(more)
         .current_dir(dir)
         .env(
@@ -396,4 +400,132 @@ fn local_helper_source_wins_over_stale_timestamp_bytecode() {
     let report = run(dir.path(), &[]);
     assert_eq!(report.0, 1, "{}", report.1);
     assert_eq!(report.1["summary"]["failed"], 1);
+}
+
+#[test]
+fn isolated_asyncio_background_and_callback_failures_are_owned() {
+    let dir = project(&[(
+        "test_isolated.py",
+        r#"import unittest,asyncio
+class Isolated(unittest.IsolatedAsyncioTestCase):
+ async def test_callback(self):
+  def fail(): raise AssertionError('callback failed')
+  asyncio.get_running_loop().call_soon(fail)
+  await asyncio.sleep(0)
+ async def test_task(self):
+  async def fail(): raise ValueError('task failed')
+  asyncio.create_task(fail())
+  await asyncio.sleep(0)
+ async def test_caught(self):
+  async def fail(): raise ValueError('expected')
+  try: await asyncio.create_task(fail())
+  except ValueError: pass
+"#,
+    )]);
+    let report = run(dir.path(), &[]);
+    assert_eq!(report.0, 1, "{}", report.1);
+    assert_eq!(report.1["summary"]["failed"], 2);
+    assert_eq!(report.1["summary"]["passed"], 1);
+}
+
+#[test]
+fn unsupported_class_autouse_fixture_and_module_hooks_fail_explicitly() {
+    let dir = project(&[
+        (
+            "test_class.py",
+            r#"from taut import fixture
+class TestExample:
+ @fixture(autouse=True)
+ def required_setup(self): raise AssertionError('required')
+ def test_ok(self): pass
+"#,
+        ),
+        (
+            "test_module.py",
+            "def setUpModule(): raise AssertionError('required')\ndef test_ok(): pass\n",
+        ),
+    ]);
+    let report = run(dir.path(), &[]);
+    assert_eq!(report.0, 1, "{}", report.1);
+    assert_eq!(report.1["summary"]["failed"], 2);
+    assert!(report.1.to_string().contains("Class fixture"));
+    assert!(report.1.to_string().contains("setUpModule"));
+}
+
+#[cfg(unix)]
+#[test]
+fn timed_out_and_healthy_workers_terminate_their_owned_descendants() {
+    use std::time::{Duration, Instant};
+    for hang in [true, false] {
+        let body = if hang { "time.sleep(30)" } else { "pass" };
+        let source = format!(
+            "import os, subprocess, sys, pathlib, time\ndef test_child():\n assert os.getpgrp() == os.getpid()\n child=subprocess.Popen([sys.executable,'-c','import time;time.sleep(30)'])\n pathlib.Path('child.pid').write_text(str(child.pid))\n {body}\n"
+        );
+        let dir = project(&[("test_child.py", &source)]);
+        let report = run(dir.path(), &["--timeout", "0.15"]);
+        assert_eq!(report.0, if hang { 1 } else { 0 }, "{}", report.1);
+        let pid: libc::pid_t = fs::read_to_string(dir.path().join("child.pid"))
+            .unwrap()
+            .parse()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            // SAFETY: signal zero checks the child PID recorded by this test.
+            let alive = unsafe { libc::kill(pid, 0) } == 0;
+            #[cfg(target_os = "linux")]
+            let zombie = fs::read_to_string(format!("/proc/{pid}/stat"))
+                .is_ok_and(|stat| stat.split_whitespace().nth(2) == Some("Z"));
+            #[cfg(not(target_os = "linux"))]
+            let zombie = false;
+            if !alive || zombie {
+                break;
+            }
+            if Instant::now() >= deadline {
+                // SAFETY: clean up only the still-running child owned by this test.
+                unsafe {
+                    libc::kill(pid, libc::SIGKILL);
+                }
+                panic!("worker descendant {pid} survived worker shutdown");
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+}
+
+#[test]
+fn local_noop_skip_decorator_does_not_hide_failure_in_worker_pool() {
+    let dir = project(&[(
+        "test_skip.py",
+        "def skip(function): return function\n@skip\ndef test_broken(): assert False\n",
+    )]);
+    let items = taut::discovery::extract_tests_from_file(&dir.path().join("test_skip.py")).unwrap();
+    let result = taut::runner::run_tests_with_options(
+        &items,
+        &taut::runner::RunOptions {
+            jobs: Some(1),
+            ..Default::default()
+        },
+        |_| {},
+    )
+    .unwrap();
+    assert_eq!(result.failed_count(), 1);
+    assert_eq!(result.skipped_count(), 0);
+}
+
+#[test]
+fn configured_root_fixtures_work_from_both_project_and_test_directory() {
+    let dir = project(&[
+        (
+            "conftest.py",
+            "from taut import fixture\n@fixture\ndef number(): return 42\n",
+        ),
+        (
+            "tests/test_number.py",
+            "def test_number(number): assert number==42\n",
+        ),
+    ]);
+    passed(&run(dir.path(), &[]), 1);
+    passed(&run(&dir.path().join("tests"), &[]), 1);
+    fs::remove_file(dir.path().join("pyproject.toml")).unwrap();
+    passed(&run(dir.path(), &["tests"]), 1);
 }

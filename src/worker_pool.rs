@@ -92,11 +92,18 @@ impl Worker {
             "import sys; exec(compile(sys.stdin.buffer.read({}), '<taut worker>', 'exec'))",
             WORKER_SCRIPT.len()
         );
-        let mut child = Command::new(python)
+        let mut command = Command::new(python);
+        command
             .args(["-u", "-c", &bootstrap])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
+            .stderr(Stdio::inherit());
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            command.process_group(0);
+        }
+        let mut child = command
             .spawn()
             .with_context(|| format!("Could not launch Python at {}", python.display()))?;
         let stdin = child.stdin.take().context("Worker stdin unavailable")?;
@@ -148,6 +155,47 @@ impl Worker {
         );
         worker.healthy = true;
         Ok(worker)
+    }
+
+    fn has_exited_without_reaping(&mut self) -> bool {
+        #[cfg(unix)]
+        {
+            // WNOWAIT preserves our leader's PID until the owned group is killed.
+            // In particular, a graceful worker exit must not allow PID reuse.
+            let mut status = std::mem::MaybeUninit::<libc::siginfo_t>::zeroed();
+            // SAFETY: status points to initialized, writable siginfo_t storage;
+            // this queries only the Child owned by this Worker and never reaps it.
+            let result = unsafe {
+                libc::waitid(
+                    libc::P_PID,
+                    self.child.id() as libc::id_t,
+                    status.as_mut_ptr(),
+                    libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+                )
+            };
+            // SAFETY: zeroed storage remains initialized, and waitid may fill it.
+            result == 0 && unsafe { status.assume_init() }.si_signo == libc::SIGCHLD
+        }
+        #[cfg(not(unix))]
+        {
+            matches!(self.child.try_wait(), Ok(Some(_)))
+        }
+    }
+
+    fn kill_owned_processes(&mut self) {
+        #[cfg(unix)]
+        {
+            let leader = self.child.id() as libc::pid_t;
+            // SAFETY: process_group(0) created this group for our still-unreaped
+            // child, so its PID cannot be reused. Exclude our own group as a final
+            // guard. getpgid cannot validate zombies on macOS (it returns ESRCH).
+            unsafe {
+                if leader > 0 && leader != libc::getpgrp() {
+                    libc::killpg(leader, libc::SIGKILL);
+                }
+            }
+        }
+        let _ = self.child.kill();
     }
 
     fn run_batch(
@@ -234,14 +282,14 @@ impl Drop for Worker {
             if sent.is_ok() {
                 let deadline = Instant::now() + Duration::from_millis(250);
                 while Instant::now() < deadline {
-                    if matches!(self.child.try_wait(), Ok(Some(_))) {
+                    if self.has_exited_without_reaping() {
                         break;
                     }
                     thread::sleep(Duration::from_millis(1));
                 }
             }
         }
-        let _ = self.child.kill();
+        self.kill_owned_processes();
         let _ = self.child.wait();
         // Descendant processes may have inherited the pipe. Never block shutdown on them.
         if self

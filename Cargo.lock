@@ -1159,6 +1159,7 @@ dependencies = [
  "criterion",
  "crossbeam-channel",
  "dirs",
+ "libc",
  "notify",
  "num-traits",
  "rayon",
