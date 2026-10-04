@@ -64,7 +64,13 @@ jobs:
             PYTHON=.venv/bin/python
           fi
           "$PYTHON" -m pip install .
-      - name: Test installed binary, decorators and module entry point
+      - name: Python fixture, parameter and benchmark contract tests
+        shell: bash
+        run: |
+          python tests/test_fixture_runtime.py
+          python tests/test_parametrize_helper.py
+          python benches/test_compare_execution.py
+      - name: Test installed binary, public helpers and module entry point
         run: python .github/scripts/packaging_smoke.py
 
   linux:
