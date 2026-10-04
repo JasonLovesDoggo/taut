@@ -489,6 +489,24 @@ class FixtureTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaisesRegex(FixtureError, "not an ancestor"):
                 FixtureRegistry.from_module(module, nested / "test_example.py", root / "elsewhere")
 
+    async def test_venv_only_project_excludes_outer_conftest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            outer = Path(directory).resolve()
+            root = outer / "inner"
+            nested = root / "tests"
+            nested.mkdir(parents=True)
+            (root / ".venv").mkdir()
+            (outer / "pyproject.toml").write_text("")
+            (outer / "conftest.py").write_text("raise RuntimeError('outer conftest imported')\n")
+            (root / "conftest.py").write_text(
+                "from _fixture_decorators import fixture\n@fixture\ndef number(): return 42\n"
+            )
+            definitions = FixtureRegistry.from_module(
+                types.ModuleType("venv_root_test"), nested / "test_example.py"
+            )
+            async with FixtureContext(definitions) as context:
+                self.assertEqual(await context.resolve("number"), 42)
+
     def test_concurrent_conftest_loading_never_exposes_partial_module(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory).resolve() / "conftest.py"

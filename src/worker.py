@@ -250,7 +250,7 @@ def _fixture_boundary(filename):
         parent = directory
         while True:
             parents.append(parent)
-            if any(os.path.exists(os.path.join(parent, marker)) for marker in ("pyproject.toml", "pytest.ini", "setup.cfg", "setup.py", ".git")):
+            if any(os.path.exists(os.path.join(parent, marker)) for marker in ("pyproject.toml", "pytest.ini", "setup.cfg", "setup.py", ".git")) or os.path.isdir(os.path.join(parent, ".venv")):
                 break
             next_parent = os.path.dirname(parent)
             if next_parent == parent:

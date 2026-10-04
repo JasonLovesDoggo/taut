@@ -238,6 +238,71 @@ fn external_project_venv_beats_launcher_for_doctor_normal_changed_and_watch() {
 }
 
 #[test]
+fn first_selected_project_governs_interpreter_and_isolation_for_all_paths() {
+    let directory = TempDir::new().unwrap();
+    let base = root(&directory);
+    let python = real_python();
+    let projects = [base.join("first"), base.join("second")];
+    for (index, project) in projects.iter().enumerate() {
+        let venv = project.join(".venv");
+        let created = Command::new(&python)
+            .args(["-m", "venv", "--without-pip"])
+            .arg(&venv)
+            .output()
+            .unwrap();
+        assert!(
+            created.status.success(),
+            "{}",
+            String::from_utf8_lossy(&created.stderr)
+        );
+        let isolation = if index == 0 {
+            "process-per-run"
+        } else {
+            "process-per-test"
+        };
+        fs::write(
+            project.join("pyproject.toml"),
+            format!(
+                "[tool.taut]\npython = '.venv/bin/python'\nmax-workers = 1\nisolation = '{isolation}'\n"
+            ),
+        )
+        .unwrap();
+        fs::write(
+            project.join(format!("test_project_{index}.py")),
+            format!(
+                "import os, sys\nfrom pathlib import Path\ndef test_environment():\n    assert sys.prefix == os.environ['TAUT_EXPECTED_PREFIX']\n    assert sys.prefix != sys.base_prefix\n    Path(os.environ['TAUT_PID_DIRECTORY'], '{index}').write_text(str(os.getpid()))\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    for (first, second) in [(0, 1), (1, 0)] {
+        let pid_directory = base.join(format!("pids-{first}"));
+        fs::create_dir(&pid_directory).unwrap();
+        let result = report(
+            taut(&base)
+                .arg(&projects[first])
+                .arg(&projects[second])
+                .arg("--json")
+                .env("TAUT_EXPECTED_PREFIX", projects[first].join(".venv"))
+                .env("TAUT_PID_DIRECTORY", &pid_directory)
+                .output()
+                .unwrap(),
+        );
+        assert_eq!(result["summary"]["collected"], 2, "{result}");
+        assert_eq!(result["summary"]["executed"], 2, "{result}");
+        assert_eq!(result["summary"]["passed"], 2, "{result}");
+        let first_pid = fs::read_to_string(pid_directory.join("0")).unwrap();
+        let second_pid = fs::read_to_string(pid_directory.join("1")).unwrap();
+        assert_eq!(
+            first_pid == second_pid,
+            first == 0,
+            "the first project's isolation setting must govern both selected projects"
+        );
+    }
+}
+
+#[test]
 fn nearest_project_marker_bounds_config_and_doctor_has_no_project_side_effects() {
     let directory = TempDir::new().unwrap();
     let outer = root(&directory);
@@ -396,5 +461,56 @@ fn invalid_python_and_configuration_are_machine_readable_setup_errors() {
             result["error"].as_str().unwrap().contains("pyproject.toml"),
             "{result}"
         );
+    }
+}
+
+#[test]
+fn venv_only_project_stops_outer_fixtures_at_the_reported_root() {
+    let directory = TempDir::new().unwrap();
+    let outer = root(&directory);
+    let project = outer.join("inner");
+    let nested = project.join("tests/deep");
+    fs::create_dir_all(&nested).unwrap();
+    fs::write(outer.join("pyproject.toml"), "[tool.taut]\n").unwrap();
+    fs::write(
+        outer.join("conftest.py"),
+        "raise RuntimeError('outer conftest crossed the project boundary')\n",
+    )
+    .unwrap();
+    fs::write(
+        project.join("conftest.py"),
+        "def number(): return 42\nnumber.__taut_fixture__ = {}\n",
+    )
+    .unwrap();
+    fs::write(
+        nested.join("test_boundary.py"),
+        "def test_number(number): assert number == 42\ndef test_plain(): pass\n",
+    )
+    .unwrap();
+    let python = project.join(".venv/bin/python");
+    forwarding_python(&python);
+    let interpreter = real_python();
+    let diagnose = report(
+        taut(&nested)
+            .args(["doctor", "--json"])
+            .env("TAUT_TEST_REAL_PYTHON", &interpreter)
+            .output()
+            .unwrap(),
+    );
+    assert_eq!(
+        diagnose["project"]["root"],
+        project.to_string_lossy().as_ref()
+    );
+    assert!(diagnose["project"]["config_path"].is_null());
+    assert_python(&diagnose, &python, "project_venv");
+    for args in [vec!["--json"], vec!["--changed", "--json"]] {
+        let result = report(
+            taut(&nested)
+                .args(args)
+                .env("TAUT_TEST_REAL_PYTHON", &interpreter)
+                .output()
+                .unwrap(),
+        );
+        assert_eq!(result["summary"]["passed"], 2, "{result}");
     }
 }

@@ -291,3 +291,53 @@ fn a_local_decorator_named_skip_cannot_hide_a_test_failure() {
         assert_eq!(report["summary"]["unchanged"], 0);
     }
 }
+
+#[test]
+fn empty_and_invalid_collection_do_not_require_an_available_python() {
+    let project = TempDir::new().unwrap();
+    let missing = project.path().join("missing-python");
+    let missing = missing.to_str().unwrap();
+    for extra in [vec![], vec!["--changed"]] {
+        let mut args = vec!["--python", missing, "--json"];
+        args.extend(extra);
+        let empty = run(&project, &args);
+        assert_eq!(empty.status.code(), Some(5), "{}", json(&empty));
+    }
+    fs::write(
+        project.path().join("test_pass.py"),
+        "def test_pass(): pass\n",
+    )
+    .unwrap();
+    let filtered = run(&project, &["--python", missing, "--json", "-k", "absent"]);
+    assert_eq!(filtered.status.code(), Some(5), "{}", json(&filtered));
+    fs::write(project.path().join("test_pass.py"), "def broken(:\n").unwrap();
+    let invalid = run(&project, &["--python", missing, "--json"]);
+    assert_eq!(invalid.status.code(), Some(2));
+    assert!(
+        json(&invalid)["error"]
+            .as_str()
+            .unwrap()
+            .contains("test_pass.py")
+    );
+    let doctor = run(&project, &["doctor", "--python", missing, "--json"]);
+    assert_eq!(doctor.status.code(), Some(2));
+    assert!(
+        json(&doctor)["error"]
+            .as_str()
+            .unwrap()
+            .contains("missing-python")
+    );
+    fs::write(
+        project.path().join("pyproject.toml"),
+        "[tool.taut]\nmax-workers = 0\n",
+    )
+    .unwrap();
+    let configured = run(&project, &["--python", missing, "--json"]);
+    assert_eq!(configured.status.code(), Some(2));
+    assert!(
+        json(&configured)["error"]
+            .as_str()
+            .unwrap()
+            .contains("pyproject.toml")
+    );
+}

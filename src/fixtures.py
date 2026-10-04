@@ -227,7 +227,7 @@ def _project_root(directory):
     """Infer the test project's boundary without consulting mutable cwd."""
     markers = ("pyproject.toml", "pytest.ini", "setup.cfg", "setup.py", ".git")
     for parent in (directory, *directory.parents):
-        if any((parent / marker).exists() for marker in markers):
+        if any((parent / marker).exists() for marker in markers) or (parent / ".venv").is_dir():
             return parent
     return directory
 

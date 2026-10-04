@@ -336,6 +336,14 @@ struct ExecutionSetup {
     runtime: runner::RunOptions,
 }
 
+impl ExecutionSetup {
+    fn resolve_python(mut self) -> Result<Self> {
+        self.python = self.python.resolve()?;
+        self.runtime.python = Some(self.python.path.clone());
+        Ok(self)
+    }
+}
+
 /// One setup path for execution, watch validation, changed selection and doctor.
 fn execution_setup(paths: &[PathBuf], options: &Options) -> Result<ExecutionSetup> {
     validate_paths(paths)?;
@@ -349,8 +357,7 @@ fn execution_setup(paths: &[PathBuf], options: &Options) -> Result<ExecutionSetu
         };
         (path, source)
     });
-    let python = crate::python::select(explicit, &project.root).resolve()?;
-    runtime.python = Some(python.path.clone());
+    let python = crate::python::select(explicit, &project.root);
     Ok(ExecutionSetup {
         project_root: project.root,
         config_path: project.path,
@@ -360,7 +367,7 @@ fn execution_setup(paths: &[PathBuf], options: &Options) -> Result<ExecutionSetu
 }
 
 fn doctor(path: &Path, options: &Options) -> Result<i32> {
-    let setup = execution_setup(&[path.to_path_buf()], options)?;
+    let setup = execution_setup(&[path.to_path_buf()], options)?.resolve_python()?;
     let version = crate::worker_pool::python_version(&setup.python.path)?;
     let runtime = &setup.runtime;
     let isolation = match runtime.isolation {
@@ -401,9 +408,35 @@ fn doctor(path: &Path, options: &Options) -> Result<i32> {
         println!("Python source: {}", setup.python.source.label());
         println!("Python version: {version}");
         println!(
-            "Execution settings: {}",
-            serde_json::to_string_pretty(&execution)?
+            "Workers: {} ({})",
+            runtime.worker_count(),
+            if runtime.parallel {
+                "parallel"
+            } else {
+                "sequential"
+            }
         );
+        println!("Async concurrency: {}", runtime.async_concurrency);
+        println!("Isolation: {isolation}");
+        println!(
+            "Timeout: {}",
+            runtime
+                .timeout
+                .map(|timeout| format!("{} seconds", timeout.as_secs_f64()))
+                .unwrap_or_else(|| "none".to_owned())
+        );
+        println!(
+            "Selection: {}",
+            if runtime.collect_coverage {
+                "changed tests"
+            } else {
+                "all tests"
+            }
+        );
+        if let Some(filter) = &options.filter {
+            println!("Filter: {filter}");
+        }
+        println!("Fail fast: {}", runtime.fail_fast);
     }
     Ok(0)
 }
@@ -443,7 +476,6 @@ fn execution_context(options: &runner::RunOptions, python: Option<&Path>) -> Str
 fn execute(paths: &[PathBuf], options: &Options) -> Result<i32> {
     let started = Instant::now();
     let setup = execution_setup(paths, options)?;
-    let runtime = setup.runtime;
     let Collection {
         tests: all_tests,
         before_filter,
@@ -463,6 +495,9 @@ fn execute(paths: &[PathBuf], options: &Options) -> Result<i32> {
         }
         return Ok(5);
     }
+    // Empty selections and static collection errors do not require Python.
+    let setup = setup.resolve_python()?;
+    let runtime = setup.runtime;
     let collected = all_tests.len();
     // Normal runs never instantiate the selector or parse unrelated source files.
     let mut selector = options.changed.then(selection::TestSelector::new);
@@ -522,7 +557,7 @@ fn execute(paths: &[PathBuf], options: &Options) -> Result<i32> {
 }
 
 fn watch_tests(paths: &[PathBuf], options: &Options) -> Result<i32> {
-    // Validate configuration and interpreter selection before starting a watch session.
+    // Validate configuration before starting a watch session; collection may be empty.
     execution_setup(paths, options)?;
     let (tx, rx) = mpsc::channel();
     let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
