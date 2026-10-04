@@ -1017,11 +1017,6 @@ fn coverage_excludes_stdlib() -> Result<()> {
 
 #[test]
 fn coverage_works_in_async_test() -> Result<()> {
-    // BUG: sys.settrace doesn't work inside async functions
-    // Coverage is incomplete for async code.
-    //
-    // sys.monitoring (Python 3.12+) should fix this.
-
     let tmp = TempDir::new()?;
 
     write_file(
@@ -1068,23 +1063,15 @@ fn coverage_works_in_async_test() -> Result<()> {
     assert!(results.results[0].passed);
     let coverage = results.results[0].coverage.as_ref().unwrap();
 
-    // Check if async_helper.py has coverage
-    let async_helper_cov = coverage
+    let (_, lines) = coverage
         .files
         .iter()
-        .find(|(path, _)| path.to_string_lossy().contains("async_helper.py"));
-
-    if async_helper_cov.is_none() {
-        eprintln!("BUG: No coverage collected for async helper module");
-        eprintln!("This is expected with sys.settrace - need sys.monitoring for async coverage");
-    }
-
-    // Even if we have coverage for the file, check if we have the right lines
-    if let Some((_, lines)) = async_helper_cov {
-        if lines.is_empty() || !lines.contains(&2) {
-            eprintln!("BUG: Coverage missing for lines inside async function");
-        }
-    }
+        .find(|(path, _)| path.to_string_lossy().contains("async_helper.py"))
+        .expect("async helper execution must appear in dependency coverage");
+    assert!(
+        lines.contains(&2),
+        "async helper body must be traced: {lines:?}"
+    );
 
     Ok(())
 }
