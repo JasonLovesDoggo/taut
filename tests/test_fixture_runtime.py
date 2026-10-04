@@ -260,7 +260,7 @@ class FixtureTests(unittest.IsolatedAsyncioTestCase):
                 sibling = path.with_name(path.name + "-other")
                 sibling.mkdir()
                 os.chdir(sibling)
-            self.assertEqual(Path.cwd(), sibling.resolve())
+            self.assertEqual(Path.cwd().resolve(), sibling.resolve())
             self.assertFalse(path.exists())
         finally:
             os.chdir(original_cwd)
