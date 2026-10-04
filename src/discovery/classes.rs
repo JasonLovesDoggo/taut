@@ -2,7 +2,7 @@
 //! roots, then use Python's C3 ordering and class attribute shadowing rules.
 use super::{LineIndex, TestItem, is_test_name, markers, reject_compound_tests};
 use anyhow::{Context, Result, bail};
-use rustpython_parser::ast;
+use rustpython_parser::ast::{self, Ranged};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
@@ -18,6 +18,7 @@ enum ClassKey {
 enum Symbol {
     Class(ClassKey),
     Qualified(String),
+    UncertainClass { offset: usize, unittest: bool },
     Unknown,
 }
 
@@ -158,7 +159,15 @@ impl<'a> Classes<'a> {
                     // Conditional module rebinding makes a previously known base
                     // uncertain. Reject uses of it instead of guessing a branch.
                     for name in statement_names(stmt) {
-                        result.symbols.insert(name.to_owned(), Symbol::Unknown);
+                        let symbol = match result.symbols.get(name) {
+                            Some(Symbol::Class(ClassKey::Local(index))) => Symbol::UncertainClass {
+                                offset: stmt.range().start().into(),
+                                unittest: result.classes[*index].unittest,
+                            },
+                            Some(symbol @ Symbol::UncertainClass { .. }) => symbol.clone(),
+                            _ => Symbol::Unknown,
+                        };
+                        result.symbols.insert(name.to_owned(), symbol);
                     }
                 }
             }
@@ -190,6 +199,26 @@ impl<'a> Classes<'a> {
                 "Cannot collect {}:{}: test class '{}' defined inside conditional or compound statements is unsupported; define test classes at module scope",
                 path.display(),
                 lines.line(*offset),
+                name
+            );
+        }
+        if let Some((name, offset)) = self
+            .symbols
+            .iter()
+            .filter_map(|(name, symbol)| match symbol {
+                Symbol::UncertainClass { offset, unittest }
+                    if name.starts_with("Test") || *unittest =>
+                {
+                    Some((name, *offset))
+                }
+                _ => None,
+            })
+            .min_by_key(|(name, offset)| (*offset, *name))
+        {
+            bail!(
+                "Cannot collect {}:{}: conditional rebinding of test class '{}' is unsupported; keep its final binding unconditional",
+                path.display(),
+                lines.line(offset),
                 name
             );
         }
@@ -225,7 +254,7 @@ impl<'a> Classes<'a> {
                     "external base '{name}' cannot be inspected without importing it"
                 )),
             },
-            Symbol::Unknown => {
+            Symbol::Unknown | Symbol::UncertainClass { .. } => {
                 let name = match expr {
                     ast::Expr::Name(name) => name.id.as_str(),
                     _ => "<dynamic expression>",
@@ -537,7 +566,7 @@ fn nested_contains_tests(class: &ast::StmtClassDef) -> bool {
     }) || class.name.as_str().starts_with("Test") && !class.bases.is_empty()
 }
 
-fn target_names(expr: &ast::Expr) -> Vec<&str> {
+pub(super) fn target_names(expr: &ast::Expr) -> Vec<&str> {
     match expr {
         ast::Expr::Name(name) => vec![name.id.as_str()],
         ast::Expr::Tuple(tuple) => tuple.elts.iter().flat_map(target_names).collect(),
@@ -716,7 +745,7 @@ fn statement_names(stmt: &ast::Stmt) -> Vec<&str> {
 
 // Visit statements sharing the current scope, including control-flow branches,
 // without descending into function or class scopes.
-fn visit_scope<'a>(stmt: &'a ast::Stmt, visitor: &mut impl FnMut(&'a ast::Stmt)) {
+pub(super) fn visit_scope<'a>(stmt: &'a ast::Stmt, visitor: &mut impl FnMut(&'a ast::Stmt)) {
     visitor(stmt);
     let mut visit_body = |body: &'a [ast::Stmt]| {
         for statement in body {

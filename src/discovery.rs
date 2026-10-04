@@ -1,5 +1,6 @@
 use anyhow::{Context, Result, bail};
 use rayon::prelude::*;
+use rustpython_parser::ast::Ranged;
 use rustpython_parser::{Parse, ast};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -349,6 +350,92 @@ fn reject_compound_tests(path: &Path, stmt: &ast::Stmt, lines: &LineIndex) -> Re
     Ok(())
 }
 
+// A function assigned to a test name would otherwise disappear from static
+// discovery. Reject proven callable aliases while leaving fixture values alone.
+fn reject_callable_test_aliases(suite: &[ast::Stmt], path: &Path, lines: &LineIndex) -> Result<()> {
+    if suite.iter().all(|stmt| {
+        matches!(
+            stmt,
+            ast::Stmt::FunctionDef(_)
+                | ast::Stmt::AsyncFunctionDef(_)
+                | ast::Stmt::Import(_)
+                | ast::Stmt::ImportFrom(_)
+                | ast::Stmt::ClassDef(_)
+                | ast::Stmt::Expr(_)
+        )
+    }) {
+        return Ok(());
+    }
+    let mut callables = HashSet::new();
+    let mut invalid = None;
+    for stmt in suite {
+        let conditional = matches!(
+            stmt,
+            ast::Stmt::If(_)
+                | ast::Stmt::For(_)
+                | ast::Stmt::AsyncFor(_)
+                | ast::Stmt::While(_)
+                | ast::Stmt::With(_)
+                | ast::Stmt::AsyncWith(_)
+                | ast::Stmt::Try(_)
+                | ast::Stmt::TryStar(_)
+                | ast::Stmt::Match(_)
+        );
+        classes::visit_scope(stmt, &mut |statement| {
+            let (targets, value) = match statement {
+                ast::Stmt::FunctionDef(function) => {
+                    callables.insert(function.name.as_str());
+                    return;
+                }
+                ast::Stmt::AsyncFunctionDef(function) => {
+                    callables.insert(function.name.as_str());
+                    return;
+                }
+                ast::Stmt::ClassDef(class) => {
+                    if !conditional {
+                        callables.remove(class.name.as_str());
+                    }
+                    return;
+                }
+                ast::Stmt::Assign(assign) => (
+                    assign
+                        .targets
+                        .iter()
+                        .flat_map(classes::target_names)
+                        .collect::<Vec<_>>(),
+                    assign.value.as_ref(),
+                ),
+                ast::Stmt::AnnAssign(assign) if assign.value.is_some() => (
+                    classes::target_names(&assign.target),
+                    assign.value.as_deref().unwrap(),
+                ),
+                _ => return,
+            };
+            let callable = matches!(value, ast::Expr::Lambda(_))
+                || matches!(value, ast::Expr::Name(name) if callables.contains(name.id.as_str()));
+            for name in targets {
+                if callable {
+                    if is_test_name(name) {
+                        invalid.get_or_insert((name, usize::from(statement.range().start())));
+                    }
+                    callables.insert(name);
+                } else if !conditional {
+                    callables.remove(name);
+                }
+            }
+        });
+    }
+    if let Some((name, offset)) = invalid {
+        bail!(
+            "Cannot collect {}:{}: callable alias '{}' is unsupported; define tests with def or async def",
+            path.display(),
+            lines.line(offset),
+            name
+        );
+    }
+    Ok(())
+}
+
 /// Parse a Python file without importing it and extract statically defined tests.
 pub fn extract_tests_from_file(path: &Path) -> Result<Vec<TestItem>> {
     let source = std::fs::read_to_string(path)
@@ -356,6 +443,7 @@ pub fn extract_tests_from_file(path: &Path) -> Result<Vec<TestItem>> {
     let suite = ast::Suite::parse(&source, &path.to_string_lossy())
         .map_err(|error| anyhow::anyhow!("Parse error in {}: {}", path.display(), error))?;
     let lines = LineIndex::new(&source);
+    reject_callable_test_aliases(&suite, path, &lines)?;
     let classes = classes::Classes::needed(&suite).then(|| classes::Classes::new(&suite));
     if let Some(classes) = &classes {
         classes.reject_conditional_classes(path, &lines)?;
