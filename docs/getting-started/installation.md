@@ -69,7 +69,7 @@ On macOS or Linux:
 ```sh
 cargo fmt --all -- --check
 cargo clippy --locked --all-targets --all-features -- -D warnings
-PYTHONPATH=python cargo test --locked --all-targets
+PYTHONPATH="$(pwd)/python" cargo test --locked --all-targets
 ```
 
 On Windows PowerShell:

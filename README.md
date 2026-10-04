@@ -88,7 +88,7 @@ uv venv
 uv pip install -e .
 cargo fmt --all -- --check
 cargo clippy --locked --all-targets --all-features -- -D warnings
-PYTHONPATH=python cargo test --locked --all-targets
+PYTHONPATH="$(pwd)/python" cargo test --locked --all-targets
 ```
 
 Rebuild with `uv pip install -e .` after Rust or embedded worker changes. See [source development](docs/getting-started/installation.md#build-from-source) for Windows commands and wheel verification. Install [prek](https://github.com/astral-sh/prek) and run `prek install` to enable the formatting hook.
