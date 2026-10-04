@@ -273,3 +273,14 @@ fn conditional_callable_attributes_cannot_be_omitted() {
             .contains("dynamic test attribute")
     );
 }
+
+#[test]
+fn conditional_empty_test_subclasses_cannot_hide_inherited_methods() {
+    let source = "class Base:\n    def test_fail(self): assert False\nif True:\n    class TestThing(Base): pass\n";
+    assert!(
+        collect(source)
+            .unwrap_err()
+            .to_string()
+            .contains("compound statements")
+    );
+}

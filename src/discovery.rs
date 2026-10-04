@@ -257,7 +257,13 @@ fn nested_test_offset(stmt: &ast::Stmt) -> Option<usize> {
         {
             Some(function.range.start().into())
         }
-        ast::Stmt::ClassDef(class) => class.body.iter().find_map(nested_test_offset),
+        ast::Stmt::ClassDef(class) => {
+            if class.name.as_str().starts_with("Test") {
+                Some(class.range.start().into())
+            } else {
+                class.body.iter().find_map(nested_test_offset)
+            }
+        }
         _ => compound_test_offset(stmt),
     }
 }
