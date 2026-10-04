@@ -221,3 +221,29 @@ fn external_source_changed_after_import_cannot_certify_new_bytes() {
     selector.index_files(&[tests]);
     assert_eq!(selector.select_tests(&[test]).skip_count(), 1);
 }
+
+#[test]
+fn source_changed_during_execution_cannot_certify_previous_bytes() {
+    let (_tmp, tests, test) = project();
+    let original = fs::read(&test.file).unwrap();
+    let mut selector = TestSelector::new();
+    selector.index_files(std::slice::from_ref(&tests));
+    fs::write(&test.file, "def test_example(): assert False\n").unwrap();
+    record(&mut selector, &test, vec![test.file.clone()]);
+    fs::write(&test.file, original).unwrap();
+    selector.index_files(&[tests]);
+    assert_eq!(selector.select_tests(&[test]).run_count(), 1);
+}
+
+#[test]
+fn source_changed_and_restored_before_recording_is_not_reusable() {
+    let (_tmp, tests, test) = project();
+    let original = fs::read(&test.file).unwrap();
+    let mut selector = TestSelector::new();
+    selector.index_files(std::slice::from_ref(&tests));
+    fs::write(&test.file, "def test_example(): assert False\n").unwrap();
+    fs::write(&test.file, original).unwrap();
+    record(&mut selector, &test, vec![test.file.clone()]);
+    selector.index_files(&[tests]);
+    assert_eq!(selector.select_tests(&[test]).run_count(), 1);
+}
