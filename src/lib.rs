@@ -8,6 +8,7 @@ pub mod filter;
 pub mod markers;
 pub mod output;
 pub mod parametrize;
+mod project;
 pub mod runner;
 pub mod selection;
 pub mod worker_pool;

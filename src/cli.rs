@@ -375,18 +375,8 @@ fn execute(paths: &[PathBuf], options: &Options) -> Result<i32> {
         selector.set_execution_context(&execution_context(&runtime, python.as_deref()));
     }
     let mut selected_out = Vec::new();
-    let mut skipped = Vec::new();
-    let mut runnable = Vec::new();
-    for test in all_tests {
-        if test.is_skipped() {
-            let reason = test
-                .skip_reason()
-                .unwrap_or_else(|| "marked with @skip".to_owned());
-            skipped.push(runner::skipped_result(&test, &reason));
-        } else {
-            runnable.push(test);
-        }
-    }
+    // Decorator spelling is not proof of skip semantics. Runtime metadata decides.
+    let mut runnable = all_tests;
     if let Some(selector) = &mut selector {
         selector.index_files(
             &paths
@@ -404,9 +394,6 @@ fn execute(paths: &[PathBuf], options: &Options) -> Result<i32> {
     }
     let printer =
         output::ProgressPrinter::with_options(options.verbose, options.quiet || options.json);
-    for result in &skipped {
-        printer.print_result(result);
-    }
     let run =
         runner::run_tests_with_options(&runnable, &runtime, |result| printer.print_result(result))?;
     if let Some(selector) = &mut selector {
@@ -415,9 +402,8 @@ fn execute(paths: &[PathBuf], options: &Options) -> Result<i32> {
         }
         selector.save();
     }
-    skipped.extend(run.results);
     let results = runner::TestResults {
-        results: skipped,
+        results: run.results,
         total_duration: started.elapsed(),
     };
     if options.json {
@@ -436,22 +422,10 @@ fn watch_tests(paths: &[PathBuf], options: &Options) -> Result<i32> {
     let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
         let _ = tx.send(event);
     })?;
-    let mut roots = BTreeSet::new();
-    for path in paths {
-        let absolute = selection_path(path).canonicalize()?;
-        let directory = if absolute.is_file() {
-            absolute.parent().unwrap().to_path_buf()
-        } else {
-            absolute
-        };
-        // Source files and pyproject.toml may live above a selected tests directory.
-        let root = directory
-            .ancestors()
-            .find(|ancestor| ancestor.join("pyproject.toml").is_file())
-            .unwrap_or(&directory)
-            .to_path_buf();
-        roots.insert(root);
-    }
+    let roots: BTreeSet<_> = paths
+        .iter()
+        .map(|path| crate::project::root(&selection_path(path)))
+        .collect();
     let watch_roots: Vec<_> = roots
         .iter()
         .filter(|path| {
@@ -517,9 +491,7 @@ fn watch_relevant(path: &Path) -> bool {
             )
         )
     }) && (path.extension().is_some_and(|ext| ext == "py")
-        || path
-            .file_name()
-            .is_some_and(|name| name == "pyproject.toml"))
+        || crate::project::is_configuration(path))
 }
 
 fn handle_cache_command(action: CacheAction, json: bool) -> Result<i32> {
@@ -620,7 +592,9 @@ mod tests {
     #[test]
     fn watch_ignores_generated_python_files() {
         assert!(watch_relevant(Path::new("src/example.py")));
-        assert!(watch_relevant(Path::new("pyproject.toml")));
+        for configuration in ["pyproject.toml", "pytest.ini", "setup.cfg", "setup.py"] {
+            assert!(watch_relevant(Path::new(configuration)));
+        }
         assert!(!watch_relevant(Path::new(".venv/lib/test_fake.py")));
         assert!(!watch_relevant(Path::new("__pycache__/test.py")));
     }

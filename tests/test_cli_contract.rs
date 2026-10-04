@@ -261,3 +261,22 @@ fn watch_recovers_after_an_initial_syntax_error_is_fixed() {
         "watch must stay running after a collection failure"
     );
 }
+
+#[test]
+fn a_local_decorator_named_skip_cannot_hide_a_test_failure() {
+    let project = TempDir::new().unwrap();
+    fs::write(project.path().join("test_decorator.py"), "def skip(function):\n    return function\n@skip\ndef test_broken():\n    assert False, 'local skip is a no-op'\n").unwrap();
+    for args in [vec!["--json"], vec!["--changed", "--json"]] {
+        let result = run(&project, &args);
+        assert_eq!(
+            result.status.code(),
+            Some(1),
+            "{}",
+            String::from_utf8_lossy(&result.stdout)
+        );
+        let report = json(&result);
+        assert_eq!(report["summary"]["failed"], 1);
+        assert_eq!(report["summary"]["skipped"], 0);
+        assert_eq!(report["summary"]["unchanged"], 0);
+    }
+}

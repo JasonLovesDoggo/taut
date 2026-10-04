@@ -3,16 +3,10 @@ use colored::Colorize;
 use std::io::{self, IsTerminal, Write};
 use std::sync::Mutex;
 
-#[derive(Default)]
-struct ProgressState {
-    started: bool,
-    failed_tests: Vec<TestResult>,
-}
-
 pub struct ProgressPrinter {
     verbose: bool,
     quiet: bool,
-    state: Mutex<ProgressState>,
+    started: Mutex<bool>,
 }
 
 impl ProgressPrinter {
@@ -24,26 +18,23 @@ impl ProgressPrinter {
         Self {
             verbose,
             quiet,
-            state: Mutex::new(ProgressState::default()),
+            started: Mutex::new(false),
         }
     }
 
     pub fn print_result(&self, result: &TestResult) {
-        let mut state = self.state.lock().unwrap();
-        if !result.passed && !result.skipped {
-            state.failed_tests.push(result.clone());
-        }
         if self.quiet {
             return;
         }
+        let mut started = self.started.lock().unwrap();
         let mut stdout = io::stdout().lock();
-        if !state.started {
+        if !*started {
             if self.verbose {
                 let _ = writeln!(stdout, "{}", "taut".bold());
             } else {
                 let _ = write!(stdout, "{} ", "taut".bold());
             }
-            state.started = true;
+            *started = true;
         }
         let symbol = if result.skipped {
             "s".cyan()
@@ -69,10 +60,6 @@ impl ProgressPrinter {
         if stdout.is_terminal() {
             let _ = stdout.flush();
         }
-    }
-
-    pub fn get_failed_tests(&self) -> Vec<TestResult> {
-        self.state.lock().unwrap().failed_tests.clone()
     }
 }
 
@@ -211,17 +198,5 @@ mod tests {
         assert_eq!(report["summary"]["unchanged"], 1);
         assert_eq!(report["summary"]["not_run"], 1);
         assert_eq!(report["tests"][1]["error"]["message"], "failure");
-    }
-
-    #[test]
-    fn verbose_and_quiet_modes_retain_failures() {
-        let mut result = skipped_result(&TestItem::default(), "");
-        result.passed = false;
-        result.skipped = false;
-        for verbose in [false, true] {
-            let printer = ProgressPrinter::with_options(verbose, true);
-            printer.print_result(&result);
-            assert_eq!(printer.get_failed_tests().len(), 1);
-        }
     }
 }

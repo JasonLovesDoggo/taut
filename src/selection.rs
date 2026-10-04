@@ -72,7 +72,10 @@ impl TestSelector {
     /// directory. Reading source bytes is cheaper and safer than AST-based
     /// dependency inference. Any addition, removal or edit reruns the suite.
     pub fn index_files(&mut self, paths: &[PathBuf]) {
-        let roots: BTreeSet<_> = paths.iter().map(|path| project_root(path)).collect();
+        let roots: BTreeSet<_> = paths
+            .iter()
+            .map(|path| crate::project::root(path))
+            .collect();
         let environments: BTreeSet<_> = roots
             .iter()
             .flat_map(|root| [root.join(".venv"), root.join("venv")])
@@ -205,36 +208,6 @@ impl Default for TestSelector {
     fn default() -> Self {
         Self::new()
     }
-}
-
-fn project_root(path: &Path) -> PathBuf {
-    let path = canonical_path(path);
-    let directory = if path.is_dir() {
-        path.as_path()
-    } else {
-        path.parent().unwrap_or(&path)
-    };
-    for ancestor in directory.ancestors() {
-        if ["pyproject.toml", "setup.cfg", "setup.py", ".git"]
-            .iter()
-            .any(|marker| ancestor.join(marker).exists())
-        {
-            return ancestor.to_path_buf();
-        }
-    }
-    if let Ok(cwd) = std::env::current_dir() {
-        let cwd = canonical_path(&cwd);
-        if path.starts_with(&cwd) {
-            return cwd;
-        }
-    }
-    if directory
-        .file_name()
-        .is_some_and(|name| name == "tests" || name == "test")
-    {
-        return directory.parent().unwrap_or(directory).to_path_buf();
-    }
-    directory.to_path_buf()
 }
 
 fn excluded_directory(name: &std::ffi::OsStr) -> bool {
