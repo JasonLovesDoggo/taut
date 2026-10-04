@@ -64,7 +64,9 @@ def test_threaded_work():
         assert list(executor.map(abs, [-1, -2])) == [1, 2]
 ```
 
-Taut schedules the test in a worker process. It does not impose a separate thread-based test scheduler. Join threads before returning and retrieve future results so worker-thread exceptions propagate to the test. A raw thread's exception is not automatically an exception in the thread that joined it.
+Taut schedules the test in a worker process. It attributes uncaught exceptions from raw threads started during a test to that test. Join every thread before returning: background threads that outlive their test can race result reporting and later tests.
+
+For executors, consume the mapped results or call `Future.result()` so stored exceptions propagate to the test. Taut does not impose a separate thread-based test scheduler.
 
 ## Fixtures
 
