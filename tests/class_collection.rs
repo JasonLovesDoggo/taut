@@ -284,3 +284,34 @@ fn conditional_empty_test_subclasses_cannot_hide_inherited_methods() {
             .contains("compound statements")
     );
 }
+
+#[test]
+fn conditional_unittest_subclasses_are_classified_through_aliases() {
+    for source in [
+        "import unittest\nclass Base(unittest.TestCase):\n    def testFail(self): assert False\nif True:\n    class Behaviour(Base): pass\n",
+        "from unittest import TestCase as TC\nif True:\n    class Behaviour(TC): pass\n",
+        "import unittest as ut\nAlias = ut.TestCase\nif True:\n    class Behaviour(Alias): pass\n",
+    ] {
+        assert!(
+            collect(source)
+                .unwrap_err()
+                .to_string()
+                .contains("compound statements")
+        );
+    }
+}
+
+#[test]
+fn nested_unittest_subclasses_with_only_inherited_tests_are_rejected() {
+    for source in [
+        "import unittest\nclass Base(unittest.TestCase):\n    def testFail(self): assert False\nclass Outer(unittest.TestCase):\n    class Inner(Base): pass\n",
+        "import unittest\nclass Base(unittest.TestCase):\n    def testFail(self): assert False\nclass Outer(unittest.TestCase):\n    if True:\n        class Inner(Base): pass\n",
+    ] {
+        assert!(
+            collect(source)
+                .unwrap_err()
+                .to_string()
+                .contains("nested test class")
+        );
+    }
+}

@@ -37,6 +37,7 @@ struct Class<'a> {
 pub(super) struct Classes<'a> {
     symbols: HashMap<String, Symbol>,
     classes: Vec<Class<'a>>,
+    conditional_tests: Vec<(String, usize)>,
 }
 
 impl<'a> Classes<'a> {
@@ -44,6 +45,7 @@ impl<'a> Classes<'a> {
         let mut result = Self {
             symbols: HashMap::from([("object".to_owned(), Symbol::Class(ClassKey::Object))]),
             classes: Vec::new(),
+            conditional_tests: Vec::new(),
         };
         for stmt in suite {
             match stmt {
@@ -130,6 +132,29 @@ impl<'a> Classes<'a> {
                         .insert(function.name.to_string(), Symbol::Unknown);
                 }
                 _ => {
+                    let mut conditional_tests = Vec::new();
+                    visit_scope(stmt, &mut |statement| {
+                        if let ast::Stmt::ClassDef(class) = statement {
+                            let unittest =
+                                class
+                                    .bases
+                                    .iter()
+                                    .any(|base| match result.resolve_base(base) {
+                                        Ok(ClassKey::TestCase | ClassKey::AsyncTestCase) => true,
+                                        Ok(ClassKey::Local(index)) => {
+                                            result.classes[index].unittest
+                                        }
+                                        _ => false,
+                                    });
+                            if class.name.as_str().starts_with("Test") || unittest {
+                                conditional_tests.push((
+                                    class.name.to_string(),
+                                    usize::from(class.range.start()),
+                                ));
+                            }
+                        }
+                    });
+                    result.conditional_tests.extend(conditional_tests);
                     // Conditional module rebinding makes a previously known base
                     // uncertain. Reject uses of it instead of guessing a branch.
                     for name in statement_names(stmt) {
@@ -139,6 +164,36 @@ impl<'a> Classes<'a> {
             }
         }
         result
+    }
+
+    pub(super) fn needed(suite: &[ast::Stmt]) -> bool {
+        suite.iter().any(|stmt| {
+            matches!(
+                stmt,
+                ast::Stmt::ClassDef(_)
+                    | ast::Stmt::If(_)
+                    | ast::Stmt::For(_)
+                    | ast::Stmt::AsyncFor(_)
+                    | ast::Stmt::While(_)
+                    | ast::Stmt::With(_)
+                    | ast::Stmt::AsyncWith(_)
+                    | ast::Stmt::Try(_)
+                    | ast::Stmt::TryStar(_)
+                    | ast::Stmt::Match(_)
+            )
+        })
+    }
+
+    pub(super) fn reject_conditional_classes(&self, path: &Path, lines: &LineIndex) -> Result<()> {
+        if let Some((name, offset)) = self.conditional_tests.first() {
+            bail!(
+                "Cannot collect {}:{}: test class '{}' defined inside conditional or compound statements is unsupported; define test classes at module scope",
+                path.display(),
+                lines.line(*offset),
+                name
+            );
+        }
+        Ok(())
     }
 
     fn resolve_symbol(&self, expr: &ast::Expr) -> Symbol {
@@ -339,9 +394,24 @@ impl<'a> Classes<'a> {
             let base = &self.classes[*index];
             for statement in &base.node.body {
                 reject_compound_tests(path, statement, lines)?;
-                if let ast::Stmt::ClassDef(nested) = statement
-                    && nested_contains_tests(nested)
-                {
+                let mut nested_test = None;
+                visit_scope(statement, &mut |statement| {
+                    if let ast::Stmt::ClassDef(nested) = statement {
+                        let unittest =
+                            nested
+                                .bases
+                                .iter()
+                                .any(|base| match self.resolve_base(base) {
+                                    Ok(ClassKey::TestCase | ClassKey::AsyncTestCase) => true,
+                                    Ok(ClassKey::Local(index)) => self.classes[index].unittest,
+                                    _ => false,
+                                });
+                        if nested_contains_tests(nested) || unittest {
+                            nested_test.get_or_insert(nested);
+                        }
+                    }
+                });
+                if let Some(nested) = nested_test {
                     bail!(
                         "Cannot collect {}:{}: nested test class '{}.{}' is unsupported; define test classes at module scope",
                         path.display(),
@@ -652,5 +722,60 @@ fn statement_names(stmt: &ast::Stmt) -> Vec<&str> {
             }))
             .collect(),
         _ => Vec::new(),
+    }
+}
+
+// Visit statements sharing the current scope, including control-flow branches,
+// without descending into function or class scopes.
+fn visit_scope<'a>(stmt: &'a ast::Stmt, visitor: &mut impl FnMut(&'a ast::Stmt)) {
+    visitor(stmt);
+    let mut visit_body = |body: &'a [ast::Stmt]| {
+        for statement in body {
+            visit_scope(statement, visitor);
+        }
+    };
+    match stmt {
+        ast::Stmt::If(node) => {
+            visit_body(&node.body);
+            visit_body(&node.orelse);
+        }
+        ast::Stmt::While(node) => {
+            visit_body(&node.body);
+            visit_body(&node.orelse);
+        }
+        ast::Stmt::For(node) => {
+            visit_body(&node.body);
+            visit_body(&node.orelse);
+        }
+        ast::Stmt::AsyncFor(node) => {
+            visit_body(&node.body);
+            visit_body(&node.orelse);
+        }
+        ast::Stmt::With(node) => visit_body(&node.body),
+        ast::Stmt::AsyncWith(node) => visit_body(&node.body),
+        ast::Stmt::Match(node) => {
+            for case in &node.cases {
+                visit_body(&case.body);
+            }
+        }
+        ast::Stmt::Try(node) => {
+            visit_body(&node.body);
+            visit_body(&node.orelse);
+            visit_body(&node.finalbody);
+            for handler in &node.handlers {
+                let ast::ExceptHandler::ExceptHandler(handler) = handler;
+                visit_body(&handler.body);
+            }
+        }
+        ast::Stmt::TryStar(node) => {
+            visit_body(&node.body);
+            visit_body(&node.orelse);
+            visit_body(&node.finalbody);
+            for handler in &node.handlers {
+                let ast::ExceptHandler::ExceptHandler(handler) = handler;
+                visit_body(&handler.body);
+            }
+        }
+        _ => {}
     }
 }

@@ -360,10 +360,10 @@ pub fn extract_tests_from_file(path: &Path) -> Result<Vec<TestItem>> {
     let suite = ast::Suite::parse(&source, &path.to_string_lossy())
         .map_err(|error| anyhow::anyhow!("Parse error in {}: {}", path.display(), error))?;
     let lines = LineIndex::new(&source);
-    let classes = suite
-        .iter()
-        .any(|stmt| matches!(stmt, ast::Stmt::ClassDef(_)))
-        .then(|| classes::Classes::new(&suite));
+    let classes = classes::Classes::needed(&suite).then(|| classes::Classes::new(&suite));
+    if let Some(classes) = &classes {
+        classes.reject_conditional_classes(path, &lines)?;
+    }
     let mut items = Vec::new();
     for stmt in &suite {
         if make_item(path, stmt, None, &[], &lines, &mut items)? {
