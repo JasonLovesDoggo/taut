@@ -19,13 +19,23 @@ pub struct TestId {
     pub class: Option<String>,
 }
 
-impl From<&TestItem> for TestId {
-    fn from(item: &TestItem) -> Self {
+impl TestId {
+    fn with_file(item: &TestItem, file: PathBuf) -> Self {
+        let function = match crate::parametrize::case_id(item) {
+            Some(case) => format!("{}[{case}]", item.function),
+            None => item.function.clone(),
+        };
         Self {
-            file: canonical_path(&item.file),
-            function: item.function.clone(),
+            file,
+            function,
             class: item.class.clone(),
         }
+    }
+}
+
+impl From<&TestItem> for TestId {
+    fn from(item: &TestItem) -> Self {
+        Self::with_file(item, canonical_path(&item.file))
     }
 }
 
@@ -184,12 +194,8 @@ impl DependencyDatabase {
         let file = aliases
             .entry(test.file.clone())
             .or_insert_with(|| canonical_path(&test.file));
-        serde_json::to_string(&TestId {
-            file: file.clone(),
-            function: test.function.clone(),
-            class: test.class.clone(),
-        })
-        .expect("test identity is serializable")
+        serde_json::to_string(&TestId::with_file(test, file.clone()))
+            .expect("test identity is serializable")
     }
 
     fn snapshot(&self) -> Option<String> {
