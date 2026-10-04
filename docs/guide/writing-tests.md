@@ -257,6 +257,8 @@ taut -x
 
 The timeout is expressed in seconds. Async work can be cancelled cooperatively; a worker that does not respond can be terminated. Python cleanup cannot run after hard termination.
 
+After tests finish, each healthy worker has up to five seconds to exit, including Python exit handlers and remaining threads. A shutdown timeout or unsuccessful worker exit is a runner error (exit code 2), even if every test body passed.
+
 On Unix, worker cleanup terminates its owned process group, including child processes that have not detached. Detached children and Windows descendants are not guaranteed to terminate. Tests remain responsible for closing resources and joining their child processes.
 
 `-x` stops scheduling after the first observed failure. Tests already running may complete. With fail-fast enabled, the runner dispatches one test at a time to each worker; same-loop async overlap is consequently reduced.

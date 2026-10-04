@@ -19,6 +19,7 @@ use std::time::{Duration, Instant};
 
 include!(concat!(env!("OUT_DIR"), "/worker_script.rs"));
 const MAX_FRAME: usize = 64 * 1024 * 1024;
+const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Deserialize)]
 struct WorkerResponse {
@@ -50,10 +51,11 @@ pub fn resolve_python(explicit: Option<&Path>) -> PathBuf {
 
 /// Start the real worker without sending any test or fixture requests.
 pub(crate) fn python_version(python: &PathBuf) -> Result<String> {
-    Ok(Worker::spawn(python)
-        .with_context(|| format!("Could not initialize Python at {}", python.display()))?
-        .python_version
-        .clone())
+    let worker = Worker::spawn(python)
+        .with_context(|| format!("Could not initialize Python at {}", python.display()))?;
+    let version = worker.python_version.clone();
+    worker.shutdown()?;
+    Ok(version)
 }
 
 struct Worker {
@@ -61,7 +63,7 @@ struct Worker {
     stdin: ChildStdin,
     responses: Receiver<Result<serde_json::Value>>,
     reader: Option<JoinHandle<()>>,
-    healthy: bool,
+    reaped: bool,
     python_version: String,
 }
 
@@ -114,7 +116,7 @@ impl Worker {
             stdin,
             responses,
             reader: Some(reader),
-            healthy: false,
+            reaped: false,
             python_version: String::new(),
         };
         worker
@@ -138,11 +140,10 @@ impl Worker {
             .and_then(|value| value.as_str())
             .context("Missing Python version in worker greeting")?
             .to_owned();
-        worker.healthy = true;
         Ok(worker)
     }
 
-    fn has_exited_without_reaping(&mut self) -> bool {
+    fn has_exited_without_reaping(&mut self) -> std::io::Result<bool> {
         #[cfg(unix)]
         {
             // WNOWAIT preserves our leader's PID until the owned group is killed.
@@ -158,13 +159,64 @@ impl Worker {
                     libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
                 )
             };
+            if result != 0 {
+                let error = std::io::Error::last_os_error();
+                if error.kind() == std::io::ErrorKind::Interrupted {
+                    return Ok(false);
+                }
+                if error.raw_os_error() == Some(libc::ECHILD) {
+                    // An external reaper has released our PID; never signal a
+                    // process group whose identity we can no longer retain.
+                    self.reaped = true;
+                }
+                return Err(error);
+            }
             // SAFETY: zeroed storage remains initialized, and waitid may fill it.
-            result == 0 && unsafe { status.assume_init() }.si_signo == libc::SIGCHLD
+            Ok(unsafe { status.assume_init() }.si_signo == libc::SIGCHLD)
         }
         #[cfg(not(unix))]
         {
-            matches!(self.child.try_wait(), Ok(Some(_)))
+            self.child.try_wait().map(|status| status.is_some())
         }
+    }
+
+    /// Complete a healthy worker's exit handlers before certifying the run.
+    /// Drop remains responsible for forced cleanup on any error or unwinding.
+    fn shutdown(mut self) -> Result<()> {
+        let shutdown = b"{\"cmd\":\"shutdown\"}";
+        self.stdin
+            .write_all(&(shutdown.len() as u32).to_le_bytes())
+            .and_then(|_| self.stdin.write_all(shutdown))
+            .and_then(|_| self.stdin.flush())
+            .context("Could not request Python worker shutdown")?;
+        let deadline = Instant::now() + SHUTDOWN_TIMEOUT;
+        loop {
+            if self
+                .has_exited_without_reaping()
+                .context("Could not observe Python worker shutdown")?
+            {
+                break;
+            }
+            anyhow::ensure!(
+                Instant::now() < deadline,
+                "Python worker shutdown timed out after {} seconds; exit handlers or threads did not finish",
+                SHUTDOWN_TIMEOUT.as_secs()
+            );
+            thread::sleep(Duration::from_millis(1));
+        }
+        // The Unix leader remains unreaped until its descendants are killed,
+        // preserving the process-group identity even after a graceful exit.
+        self.kill_owned_processes();
+        let status = self
+            .child
+            .wait()
+            .context("Could not reap Python worker after shutdown")?;
+        self.reaped = true;
+        anyhow::ensure!(
+            status.success(),
+            "Python worker exited unsuccessfully during shutdown: {status}"
+        );
+        Ok(())
     }
 
     fn kill_owned_processes(&mut self) {
@@ -257,25 +309,10 @@ impl Worker {
 
 impl Drop for Worker {
     fn drop(&mut self) {
-        if self.healthy {
-            let shutdown = b"{\"cmd\":\"shutdown\"}";
-            let sent = self
-                .stdin
-                .write_all(&(shutdown.len() as u32).to_le_bytes())
-                .and_then(|_| self.stdin.write_all(shutdown))
-                .and_then(|_| self.stdin.flush());
-            if sent.is_ok() {
-                let deadline = Instant::now() + Duration::from_millis(250);
-                while Instant::now() < deadline {
-                    if self.has_exited_without_reaping() {
-                        break;
-                    }
-                    thread::sleep(Duration::from_millis(1));
-                }
-            }
+        if !self.reaped {
+            self.kill_owned_processes();
+            let _ = self.child.wait();
         }
-        self.kill_owned_processes();
-        let _ = self.child.wait();
         // Descendant processes may have inherited the pipe. Never block shutdown on them.
         if self
             .reader
@@ -284,6 +321,19 @@ impl Drop for Worker {
         {
             let _ = self.reader.take().unwrap().join();
         }
+    }
+}
+
+fn finish_worker(worker: &mut Option<Worker>, queue: &Queue) {
+    if let Some(worker) = worker.take()
+        && let Err(error) = worker.shutdown()
+    {
+        let mut state = queue.state.lock().unwrap();
+        state.stopped = true;
+        state
+            .fatal_error
+            .get_or_insert_with(|| format!("{error:#}"));
+        queue.changed.notify_all();
     }
 }
 
@@ -415,6 +465,8 @@ fn worker_thread(
             let mut state = queue.state.lock().unwrap();
             loop {
                 if state.stopped || state.next == items.len() {
+                    drop(state);
+                    finish_worker(&mut worker, queue);
                     return;
                 }
                 let serial = is_serial(&items[state.next]);
@@ -448,7 +500,9 @@ fn worker_thread(
                     Err(error) => {
                         let mut state = queue.state.lock().unwrap();
                         state.stopped = true;
-                        state.fatal_error = Some(format!("{error:#}"));
+                        state
+                            .fatal_error
+                            .get_or_insert_with(|| format!("{error:#}"));
                         queue.changed.notify_all();
                         return;
                     }
@@ -469,20 +523,17 @@ fn worker_thread(
             match execution {
                 Ok(restart) => {
                     if restart {
-                        worker.as_mut().unwrap().healthy = false;
                         worker.take();
                     }
                 }
                 Err(error) => {
-                    if let Some(worker) = worker.as_mut() {
-                        worker.healthy = false;
-                    }
                     worker.take();
                     if pending.is_empty() {
                         let mut state = queue.state.lock().unwrap();
                         state.stopped = true;
-                        state.fatal_error =
-                            Some(format!("Worker failed to finish its batch: {error:#}"));
+                        state.fatal_error.get_or_insert_with(|| {
+                            format!("Worker failed to finish its batch: {error:#}")
+                        });
                     }
                     for (idx, item) in pending.drain(..) {
                         let _ = tx.send((
@@ -496,7 +547,7 @@ fn worker_thread(
                 }
             }
             if options.isolation == IsolationMode::ProcessPerTest {
-                worker.take();
+                finish_worker(&mut worker, queue);
             }
         }
         let mut state = queue.state.lock().unwrap();

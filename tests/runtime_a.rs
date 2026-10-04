@@ -314,12 +314,16 @@ fn healthy_shutdown_runs_atexit_but_hanging_threads_cannot_block_runner() {
     assert!(dir.path().join("test_cases.py.exit").exists());
     fs::write(&file,"import threading, time\ndef test_thread():\n threading.Thread(target=lambda: time.sleep(30)).start()\n").unwrap();
     let start = Instant::now();
+    let error = run_tests_with_options(&[item(&file, "test_thread")], &options(), |_| {})
+        .err()
+        .expect("unfinished threads must cause a shutdown error");
     assert!(
-        run_tests_with_options(&[item(&file, "test_thread")], &options(), |_| {})
-            .unwrap()
-            .all_passed()
+        error
+            .to_string()
+            .contains("shutdown timed out after 5 seconds")
     );
-    assert!(start.elapsed() < Duration::from_secs(3));
+    assert!(start.elapsed() >= Duration::from_secs(5));
+    assert!(start.elapsed() < Duration::from_secs(15));
 }
 
 #[test]
