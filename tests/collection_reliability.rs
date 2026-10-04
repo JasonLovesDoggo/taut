@@ -43,7 +43,10 @@ fn explicit_python_files_do_not_require_a_discovery_name() {
             .unwrap()
             .is_empty()
     );
-    assert_eq!(find_test_files(&[file.clone()]).unwrap(), vec![file]);
+    assert_eq!(
+        find_test_files(std::slice::from_ref(&file)).unwrap(),
+        vec![file]
+    );
 }
 
 #[test]
@@ -198,7 +201,7 @@ fn positional_selectors_match_exact_functions_classes_and_methods() {
         ("TestA::test_b", vec!["test_b"]),
     ] {
         let selector = PathBuf::from(format!("{}::{suffix}", file.display()));
-        let items = collect_tests(&[selector.clone()], None).unwrap();
+        let items = collect_tests(std::slice::from_ref(&selector), None).unwrap();
         assert_eq!(
             items
                 .iter()

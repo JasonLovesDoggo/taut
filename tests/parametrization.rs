@@ -156,7 +156,7 @@ class TestItems:
     .unwrap();
     assert_eq!(all_function_cases.len(), 2);
     assert_eq!(
-        collect_tests(&[path.clone()], Some("[slow]"))
+        collect_tests(std::slice::from_ref(&path), Some("[slow]"))
             .unwrap()
             .len(),
         2

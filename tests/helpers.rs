@@ -3,6 +3,9 @@
 //! Provides utilities similar to pytest's `pytester` fixture for creating
 //! temporary test projects, running taut, and asserting on results.
 
+// Each integration-test crate imports the subset of these shared helpers it needs.
+#![allow(dead_code)]
+
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};

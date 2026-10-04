@@ -12,7 +12,6 @@
 mod helpers;
 
 use std::fs;
-use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -1004,7 +1003,7 @@ fn coverage_excludes_stdlib() -> Result<()> {
     let coverage = results.results[0].coverage.as_ref().unwrap();
 
     // Should NOT have coverage for stdlib modules
-    for (path, _) in &coverage.files {
+    for path in coverage.files.keys() {
         let path_str = path.to_string_lossy();
         assert!(
             !path_str.contains("site-packages") && !path_str.contains("lib/python"),

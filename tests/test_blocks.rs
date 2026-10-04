@@ -9,21 +9,12 @@
 mod helpers;
 
 use std::fs;
-use std::path::Path;
 
 use anyhow::Result;
 use tempfile::TempDir;
 
 use helpers::dedent;
 use taut::blocks::{BlockKind, FileBlocks};
-
-fn write_file(path: &Path, content: &str) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::write(path, content)?;
-    Ok(())
-}
 
 // =============================================================================
 // Checksum Invariant Tests - Whitespace

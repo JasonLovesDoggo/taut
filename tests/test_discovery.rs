@@ -168,7 +168,7 @@ fn discover_single_file_path() -> Result<()> {
     write_file(&tmp.path().join("test_other.py"), "def test_ok(): pass\n")?;
 
     // Pass single file path instead of directory
-    let files = taut::discovery::find_test_files(&[target.clone()])?;
+    let files = taut::discovery::find_test_files(std::slice::from_ref(&target))?;
 
     assert_eq!(files.len(), 1);
     assert_eq!(files[0], target);

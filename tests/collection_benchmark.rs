@@ -114,7 +114,7 @@ fn inherited_collection() {
     let started = Instant::now();
     for _ in 0..20 {
         assert_eq!(
-            black_box(extract_tests(&[file.clone()], None).unwrap()).len(),
+            black_box(extract_tests(std::slice::from_ref(&file), None).unwrap()).len(),
             10_000
         );
     }
