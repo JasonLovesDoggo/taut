@@ -239,6 +239,11 @@ fn runner_options(options: &Options, config: config::Config) -> Result<runner::R
     if options.no_parallel && async_concurrency > 1 {
         bail!("--no-parallel requires --async-concurrency 1");
     }
+    if matches!(isolation, runner::IsolationMode::ProcessPerTest) && async_concurrency > 1 {
+        bail!(
+            "--async-concurrency greater than 1 requires --isolation process-per-run; isolated tests cannot share an event loop"
+        );
+    }
     let python = options.python.clone().or(config.python);
     if python.as_ref().is_some_and(|p| p.as_os_str().is_empty()) {
         bail!("--python must name an interpreter or executable path");

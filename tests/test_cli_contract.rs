@@ -181,5 +181,34 @@ fn missing_interpreter_is_a_setup_error() {
     .unwrap();
     let result = run(&project, &["--python", "/does/not/exist/python", "--json"]);
     assert_eq!(result.status.code(), Some(2));
-    assert!(json(&result)["error"].as_str().unwrap().contains("Python"));
+    assert!(
+        json(&result)["error"]
+            .as_str()
+            .unwrap()
+            .contains("/does/not/exist/python")
+    );
+}
+
+#[test]
+fn incompatible_concurrency_settings_are_rejected() {
+    let project = TempDir::new().unwrap();
+    for args in [
+        vec!["--no-parallel", "--async-concurrency", "2", "--json"],
+        vec![
+            "--isolation",
+            "process-per-test",
+            "--async-concurrency",
+            "2",
+            "--json",
+        ],
+    ] {
+        let result = run(&project, &args);
+        assert_eq!(result.status.code(), Some(2));
+        assert!(
+            json(&result)["error"]
+                .as_str()
+                .unwrap()
+                .contains("async-concurrency")
+        );
+    }
 }
