@@ -6,6 +6,8 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
+mod classes;
+
 use crate::filter::TestFilter;
 use crate::markers::{self, Marker};
 
@@ -240,24 +242,24 @@ fn make_item(
 // Static collection cannot decide which runtime branch defines a test. Report
 // detectable unsupported definitions instead of silently omitting tests.
 fn nested_test_offset(stmt: &ast::Stmt) -> Option<usize> {
-    if let Some((_, offset, _)) = test_function(stmt) {
-        return Some(offset);
+    match stmt {
+        ast::Stmt::FunctionDef(function)
+            if is_test_name(function.name.as_str())
+                || function.name.as_str().starts_with("test")
+                || function.name.as_str() == "runTest" =>
+        {
+            Some(function.range.start().into())
+        }
+        ast::Stmt::AsyncFunctionDef(function)
+            if is_test_name(function.name.as_str())
+                || function.name.as_str().starts_with("test")
+                || function.name.as_str() == "runTest" =>
+        {
+            Some(function.range.start().into())
+        }
+        ast::Stmt::ClassDef(class) => class.body.iter().find_map(nested_test_offset),
+        _ => compound_test_offset(stmt),
     }
-    if let ast::Stmt::ClassDef(class) = stmt {
-        return class
-            .name
-            .as_str()
-            .starts_with("Test")
-            .then(|| {
-                class.body.iter().find_map(|method| {
-                    test_function(method)
-                        .map(|(_, offset, _)| offset)
-                        .or_else(|| compound_test_offset(method))
-                })
-            })
-            .flatten();
-    }
-    compound_test_offset(stmt)
 }
 
 fn suite_test_offset(suite: &[ast::Stmt]) -> Option<usize> {
@@ -324,26 +326,24 @@ pub fn extract_tests_from_file(path: &Path) -> Result<Vec<TestItem>> {
     let suite = ast::Suite::parse(&source, &path.to_string_lossy())
         .map_err(|error| anyhow::anyhow!("Parse error in {}: {}", path.display(), error))?;
     let lines = LineIndex::new(&source);
+    let classes = suite
+        .iter()
+        .any(|stmt| matches!(stmt, ast::Stmt::ClassDef(_)))
+        .then(|| classes::Classes::new(&suite));
     let mut items = Vec::new();
     for stmt in &suite {
         if let Some(item) = make_item(path, stmt, None, &[], &lines) {
             items.push(item);
         } else if let ast::Stmt::ClassDef(class) = stmt {
-            if class.name.as_str().starts_with("Test") {
-                let inherited = markers::extract_class_markers(&class.decorator_list);
-                for method in &class.body {
-                    if let Some(item) =
-                        make_item(path, method, Some(class.name.as_str()), &inherited, &lines)
-                    {
-                        items.push(item);
-                    } else {
-                        reject_compound_tests(path, method, &lines)?;
-                    }
-                }
+            if let Some(classes) = &classes {
+                items.extend(classes.collect(class, path, &lines)?);
             }
         } else {
             reject_compound_tests(path, stmt, &lines)?;
         }
+    }
+    if let Some(classes) = classes {
+        items.extend(classes.collect_aliases(path, &lines)?);
     }
     Ok(items)
 }

@@ -658,15 +658,8 @@ fn handle_nested_classes() -> Result<()> {
         ),
     )?;
 
-    let items = taut::discovery::extract_tests_from_file(&file)?;
-
-    // At minimum, TestOuter.test_outer should be found
-    let outer = items.iter().find(|i| i.function == "test_outer");
-    assert!(outer.is_some(), "Should find test_outer");
-    assert_eq!(outer.unwrap().class, Some("TestOuter".to_string()));
-
-    // Nested classes may or may not be supported - document the behavior
-    // For now, we just verify no panic
+    let error = taut::discovery::extract_tests_from_file(&file).unwrap_err();
+    assert!(error.to_string().contains("nested test class"));
 
     Ok(())
 }

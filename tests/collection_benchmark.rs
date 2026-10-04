@@ -97,3 +97,29 @@ fn parallel_collection_crossover() {
         }
     }
 }
+
+#[test]
+#[ignore = "manual inherited collection benchmark"]
+fn inherited_collection() {
+    let dir = TempDir::new().unwrap();
+    let file = dir.path().join("test_inherited.py");
+    let mut source = "class Base:\n".to_owned();
+    for method in 0..40 {
+        source.push_str(&format!("    def test_{method}(self): assert True\n"));
+    }
+    for class in 0..250 {
+        source.push_str(&format!("class Test{class}(Base): pass\n"));
+    }
+    fs::write(&file, source).unwrap();
+    let started = Instant::now();
+    for _ in 0..20 {
+        assert_eq!(
+            black_box(extract_tests(&[file.clone()], None).unwrap()).len(),
+            10_000
+        );
+    }
+    eprintln!(
+        "10,000 inherited tests / 250 classes: {:.3} ms/collection",
+        started.elapsed().as_secs_f64() * 1000.0 / 20.0
+    );
+}
