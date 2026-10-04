@@ -109,8 +109,23 @@ def _raise_errors(message, errors):
 
 
 def _tmp_path():
+    previous_cwd = Path.cwd()
     with tempfile.TemporaryDirectory(prefix="taut-") as directory:
-        yield Path(directory)
+        path = Path(directory)
+        resolved_path = path.resolve()
+        try:
+            yield path
+        finally:
+            try:
+                current_cwd = Path.cwd().resolve()
+            except FileNotFoundError:
+                # POSIX permits removing the current directory before teardown.
+                os.chdir(previous_cwd)
+            else:
+                if current_cwd.is_relative_to(resolved_path):
+                    # Windows cannot delete cwd or its parents. This must happen
+                    # before cleanup even if monkeypatch has not unwound yet.
+                    os.chdir(previous_cwd)
 
 
 def _monkeypatch():

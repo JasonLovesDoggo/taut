@@ -10,6 +10,7 @@ import tempfile
 import threading
 import types
 import unittest
+from unittest import mock
 import weakref
 
 
@@ -235,13 +236,104 @@ class FixtureTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(first_path.exists())
         self.assertFalse(second_path.exists())
 
+    async def test_tmp_path_restores_cwd_from_root_and_descendant(self):
+        original_cwd = Path.cwd()
+        for relative in (Path("."), Path("child/grandchild")):
+            with self.subTest(relative=relative):
+                try:
+                    async with FixtureContext(registry()) as context:
+                        path = await context.resolve("tmp_path")
+                        destination = path / relative
+                        destination.mkdir(parents=True, exist_ok=True)
+                        os.chdir(destination)
+                    self.assertEqual(Path.cwd(), original_cwd)
+                    self.assertFalse(path.exists())
+                finally:
+                    os.chdir(original_cwd)
+
+    async def test_tmp_path_preserves_unrelated_cwd_with_same_prefix(self):
+        original_cwd = Path.cwd()
+        sibling = None
+        try:
+            async with FixtureContext(registry()) as context:
+                path = await context.resolve("tmp_path")
+                sibling = path.with_name(path.name + "-other")
+                sibling.mkdir()
+                os.chdir(sibling)
+            self.assertEqual(Path.cwd(), sibling.resolve())
+            self.assertFalse(path.exists())
+        finally:
+            os.chdir(original_cwd)
+            if sibling is not None:
+                sibling.rmdir()
+
+    async def test_tmp_path_restores_cwd_through_symlinked_temp_root(self):
+        original_cwd = Path.cwd()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "target"
+            target.mkdir()
+            link = root / "link"
+            try:
+                link.symlink_to(target, target_is_directory=True)
+            except OSError as error:
+                self.skipTest(f"directory symlinks unavailable: {error}")
+            try:
+                with mock.patch.object(tempfile, "tempdir", str(link)):
+                    async with FixtureContext(registry()) as context:
+                        path = await context.resolve("tmp_path")
+                        self.assertEqual(path.parent, link)
+                        os.chdir(path)
+                    self.assertEqual(Path.cwd(), original_cwd)
+                    self.assertFalse(path.exists())
+            finally:
+                os.chdir(original_cwd)
+
+    @unittest.skipIf(os.name == "nt", "Windows cannot remove the current directory")
+    async def test_tmp_path_restores_deleted_cwd(self):
+        original_cwd = Path.cwd()
+        try:
+            async with FixtureContext(registry()) as context:
+                path = await context.resolve("tmp_path")
+                destination = path / "removed"
+                destination.mkdir()
+                os.chdir(destination)
+                destination.rmdir()
+            self.assertEqual(Path.cwd(), original_cwd)
+            self.assertFalse(path.exists())
+        finally:
+            os.chdir(original_cwd)
+
+    async def test_tmp_path_reports_cleanup_failure(self):
+        temporary = tempfile.TemporaryDirectory()
+        try:
+            with (
+                mock.patch.object(tempfile, "TemporaryDirectory", return_value=temporary),
+                mock.patch.object(temporary, "cleanup", side_effect=PermissionError("cleanup denied")),
+            ):
+                with self.assertRaisesRegex(PermissionError, "cleanup denied"):
+                    async with FixtureContext(registry()) as context:
+                        await context.resolve("tmp_path")
+        finally:
+            temporary.cleanup()
+
     async def test_monkeypatch_undo_after_failure(self):
         key = "TAUT_FIXTURE_TEST_SENTINEL"
         old_value = os.environ.get(key)
         old_cwd = os.getcwd()
         mapping = {"key": 1}
         target = types.SimpleNamespace(value=1)
-        with self.assertRaises(AssertionError):
+        cleanup = tempfile.TemporaryDirectory.cleanup
+
+        def cleanup_outside_cwd(directory):
+            # Model Windows' cwd lock on every platform, before deletion occurs.
+            self.assertFalse(Path.cwd().resolve().is_relative_to(Path(directory.name).resolve()))
+            cleanup(directory)
+
+        with (
+            mock.patch.object(tempfile.TemporaryDirectory, "cleanup", cleanup_outside_cwd),
+            self.assertRaisesRegex(AssertionError, "test failed"),
+        ):
             async with FixtureContext(registry()) as context:
                 patch = await context.resolve("monkeypatch")
                 path = await context.resolve("tmp_path")
@@ -254,6 +346,7 @@ class FixtureTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(os.getcwd(), old_cwd)
         self.assertEqual(mapping, {"key": 1})
         self.assertEqual(target.value, 1)
+        self.assertFalse(path.exists())
 
     async def test_monkeypatch_dependency_rejected_before_setup_when_concurrent(self):
         events = []
