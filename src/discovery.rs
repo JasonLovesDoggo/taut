@@ -1,6 +1,8 @@
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
+use rayon::prelude::*;
 use rustpython_parser::{Parse, ast};
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
@@ -56,186 +58,451 @@ impl TestItem {
     }
 }
 
-/// Find all Python test files in the given paths.
+/// Find Python tests under directories, or use explicitly named Python files.
 ///
-/// A file is considered a test file if its name matches either:
-/// - `test_*.py`
-/// - `*_test*.py`
+/// Directory discovery recognizes `test_*.py`, `_test*.py`, and `*_test.py`.
+/// Dependency, VCS, cache, and build directories are pruned; naming and pruning
+/// rules never prevent an explicitly requested file or directory from being used.
+/// Directory symlinks are not followed unless supplied as an explicit root.
+/// Canonical identities deduplicate overlapping roots and file aliases while
+/// retaining the first requested spelling for useful, relative test IDs.
 pub fn find_test_files(paths: &[PathBuf]) -> Result<Vec<PathBuf>> {
-    let mut test_files = Vec::new();
-
+    let mut files = Vec::new();
+    let mut seen_files = HashSet::new();
+    let mut seen_dirs = HashSet::new();
     for path in paths {
-        if path.is_file() {
-            if is_test_file(path) {
-                test_files.push(path.clone());
+        let metadata = std::fs::metadata(path)
+            .with_context(|| format!("Cannot collect {}", path.display()))?;
+        if metadata.is_file() {
+            if path.extension().is_none_or(|extension| extension != "py") {
+                bail!(
+                    "Cannot collect {}: expected a Python (.py) file",
+                    path.display()
+                );
             }
-        } else if path.is_dir() {
-            for entry in WalkDir::new(path)
-                .into_iter()
-                .filter_map(|e| e.ok())
-                .filter(|e| e.file_type().is_file())
-            {
-                let p = entry.path();
-                if is_test_file(p) {
-                    test_files.push(p.to_path_buf());
+            add_file(path, &mut files, &mut seen_files)?;
+        } else if metadata.is_dir() {
+            let root_identity = canonical_path(path)?;
+            let mut walker = WalkDir::new(path).sort_by_file_name().into_iter();
+            while let Some(entry) = walker.next() {
+                let entry = entry.with_context(|| format!("Cannot walk {}", path.display()))?;
+                if entry.file_type().is_dir() {
+                    if entry.depth() > 0 && is_ignored_directory(entry.file_name()) {
+                        walker.skip_current_dir();
+                        continue;
+                    }
+                    // WalkDir never follows descendant directory symlinks, so
+                    // ordinary children share the canonical root's identity.
+                    let identity = root_identity.join(entry.path().strip_prefix(path)?);
+                    if !seen_dirs.insert(identity) {
+                        walker.skip_current_dir();
+                    }
+                } else if is_test_file(entry.path()) {
+                    // A test-file symlink is a valid alias. Directory symlinks
+                    // remain untraversed to avoid escaping roots or cycles.
+                    let is_file = if entry.file_type().is_symlink() {
+                        std::fs::metadata(entry.path())
+                            .with_context(|| format!("Cannot collect {}", entry.path().display()))?
+                            .is_file()
+                    } else {
+                        entry.file_type().is_file()
+                    };
+                    if is_file {
+                        let identity = if entry.file_type().is_symlink() {
+                            canonical_path(entry.path())?
+                        } else {
+                            root_identity.join(entry.path().strip_prefix(path)?)
+                        };
+                        if seen_files.insert(identity) {
+                            files.push(entry.path().to_path_buf());
+                        }
+                    }
                 }
             }
+        } else {
+            bail!(
+                "Cannot collect {}: expected a file or directory",
+                path.display()
+            );
         }
     }
+    files.sort();
+    Ok(files)
+}
 
-    test_files.sort();
-    Ok(test_files)
+fn canonical_path(path: &Path) -> Result<PathBuf> {
+    path.canonicalize()
+        .with_context(|| format!("Cannot resolve {}", path.display()))
+}
+
+fn add_file(path: &Path, files: &mut Vec<PathBuf>, seen: &mut HashSet<PathBuf>) -> Result<()> {
+    if seen.insert(canonical_path(path)?) {
+        files.push(path.to_path_buf());
+    }
+    Ok(())
+}
+
+fn is_ignored_directory(name: &std::ffi::OsStr) -> bool {
+    matches!(
+        name.to_str(),
+        Some(
+            ".git"
+                | ".hg"
+                | ".svn"
+                | ".venv"
+                | "venv"
+                | "env"
+                | "__pycache__"
+                | ".pytest_cache"
+                | ".mypy_cache"
+                | ".ruff_cache"
+                | ".tox"
+                | ".nox"
+                | "node_modules"
+                | "site-packages"
+                | "build"
+                | "dist"
+                | "target"
+        )
+    )
 }
 
 fn is_test_file(path: &Path) -> bool {
-    let Some(file_name) = path.file_name().and_then(|n| n.to_str()) else {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
         return false;
     };
-
-    if !file_name.ends_with(".py") {
-        return false;
-    }
-
-    file_name.starts_with("test_") || file_name.starts_with("_test")
+    name.ends_with(".py")
+        && (name.starts_with("test_") || name.starts_with("_test") || name.ends_with("_test.py"))
 }
 
 fn is_test_name(name: &str) -> bool {
     name.starts_with("test_") || name.starts_with("_test")
 }
 
-/// Convert byte offset to line number (1-indexed)
-fn offset_to_line(source: &str, offset: usize) -> usize {
-    source[..offset.min(source.len())]
-        .chars()
-        .filter(|&c| c == '\n')
-        .count()
-        + 1
+/// One scan of the source replaces a prefix scan for every discovered test.
+struct LineIndex(Vec<usize>);
+
+impl LineIndex {
+    fn new(source: &str) -> Self {
+        Self(
+            source
+                .bytes()
+                .enumerate()
+                .filter_map(|(offset, byte)| (byte == b'\n').then_some(offset))
+                .collect(),
+        )
+    }
+
+    fn line(&self, offset: usize) -> usize {
+        self.0.partition_point(|&newline| newline < offset) + 1
+    }
 }
 
-/// Parse a Python file and extract test items
+fn test_function(stmt: &ast::Stmt) -> Option<(&str, usize, &[ast::Expr])> {
+    match stmt {
+        ast::Stmt::FunctionDef(func) if is_test_name(func.name.as_str()) => Some((
+            func.name.as_str(),
+            func.range.start().into(),
+            &func.decorator_list,
+        )),
+        ast::Stmt::AsyncFunctionDef(func) if is_test_name(func.name.as_str()) => Some((
+            func.name.as_str(),
+            func.range.start().into(),
+            &func.decorator_list,
+        )),
+        _ => None,
+    }
+}
+
+fn make_item(
+    path: &Path,
+    stmt: &ast::Stmt,
+    class: Option<&str>,
+    inherited: &[Marker],
+    lines: &LineIndex,
+) -> Option<TestItem> {
+    let (name, offset, decorators) = test_function(stmt)?;
+    let mut markers = markers::extract_markers(decorators);
+    for marker in inherited {
+        if !markers.iter().any(|existing| existing.name == marker.name) {
+            markers.push(marker.clone());
+        }
+    }
+    Some(TestItem {
+        file: path.to_path_buf(),
+        function: name.to_owned(),
+        class: class.map(str::to_owned),
+        line: lines.line(offset),
+        markers,
+    })
+}
+
+// Static collection cannot decide which runtime branch defines a test. Report
+// detectable unsupported definitions instead of silently omitting tests.
+fn nested_test_offset(stmt: &ast::Stmt) -> Option<usize> {
+    if let Some((_, offset, _)) = test_function(stmt) {
+        return Some(offset);
+    }
+    if let ast::Stmt::ClassDef(class) = stmt {
+        return class
+            .name
+            .as_str()
+            .starts_with("Test")
+            .then(|| {
+                class.body.iter().find_map(|method| {
+                    test_function(method)
+                        .map(|(_, offset, _)| offset)
+                        .or_else(|| compound_test_offset(method))
+                })
+            })
+            .flatten();
+    }
+    compound_test_offset(stmt)
+}
+
+fn suite_test_offset(suite: &[ast::Stmt]) -> Option<usize> {
+    suite.iter().find_map(nested_test_offset)
+}
+
+fn compound_test_offset(stmt: &ast::Stmt) -> Option<usize> {
+    match stmt {
+        ast::Stmt::If(node) => {
+            suite_test_offset(&node.body).or_else(|| suite_test_offset(&node.orelse))
+        }
+        ast::Stmt::For(node) => {
+            suite_test_offset(&node.body).or_else(|| suite_test_offset(&node.orelse))
+        }
+        ast::Stmt::AsyncFor(node) => {
+            suite_test_offset(&node.body).or_else(|| suite_test_offset(&node.orelse))
+        }
+        ast::Stmt::While(node) => {
+            suite_test_offset(&node.body).or_else(|| suite_test_offset(&node.orelse))
+        }
+        ast::Stmt::With(node) => suite_test_offset(&node.body),
+        ast::Stmt::AsyncWith(node) => suite_test_offset(&node.body),
+        ast::Stmt::Match(node) => node
+            .cases
+            .iter()
+            .find_map(|case| suite_test_offset(&case.body)),
+        ast::Stmt::Try(node) => suite_test_offset(&node.body)
+            .or_else(|| suite_test_offset(&node.orelse))
+            .or_else(|| suite_test_offset(&node.finalbody))
+            .or_else(|| {
+                node.handlers.iter().find_map(|handler| {
+                    let ast::ExceptHandler::ExceptHandler(handler) = handler;
+                    suite_test_offset(&handler.body)
+                })
+            }),
+        ast::Stmt::TryStar(node) => suite_test_offset(&node.body)
+            .or_else(|| suite_test_offset(&node.orelse))
+            .or_else(|| suite_test_offset(&node.finalbody))
+            .or_else(|| {
+                node.handlers.iter().find_map(|handler| {
+                    let ast::ExceptHandler::ExceptHandler(handler) = handler;
+                    suite_test_offset(&handler.body)
+                })
+            }),
+        _ => None,
+    }
+}
+
+fn reject_compound_tests(path: &Path, stmt: &ast::Stmt, lines: &LineIndex) -> Result<()> {
+    if let Some(offset) = compound_test_offset(stmt) {
+        bail!(
+            "Cannot collect {}:{}: test definitions inside conditional or compound statements are unsupported; define tests directly in the module or test class",
+            path.display(),
+            lines.line(offset)
+        );
+    }
+    Ok(())
+}
+
+/// Parse a Python file without importing it and extract statically defined tests.
 pub fn extract_tests_from_file(path: &Path) -> Result<Vec<TestItem>> {
     let source = std::fs::read_to_string(path)
         .with_context(|| format!("Failed to read {}", path.display()))?;
-
-    let ast = ast::Suite::parse(&source, "<test>")
-        .map_err(|e| anyhow::anyhow!("Parse error in {}: {}", path.display(), e))?;
-
+    let suite = ast::Suite::parse(&source, &path.to_string_lossy())
+        .map_err(|error| anyhow::anyhow!("Parse error in {}: {}", path.display(), error))?;
+    let lines = LineIndex::new(&source);
     let mut items = Vec::new();
-
-    for stmt in ast {
-        match stmt {
-            ast::Stmt::FunctionDef(func) => {
-                if is_test_name(func.name.as_str()) {
-                    let func_markers = markers::extract_markers(&func.decorator_list);
-                    items.push(TestItem {
-                        file: path.to_path_buf(),
-                        function: func.name.to_string(),
-                        class: None,
-                        line: offset_to_line(&source, func.range.start().into()),
-                        markers: func_markers,
-                    });
-                }
-            }
-            ast::Stmt::AsyncFunctionDef(func) => {
-                if is_test_name(func.name.as_str()) {
-                    let func_markers = markers::extract_markers(&func.decorator_list);
-                    items.push(TestItem {
-                        file: path.to_path_buf(),
-                        function: func.name.to_string(),
-                        class: None,
-                        line: offset_to_line(&source, func.range.start().into()),
-                        markers: func_markers,
-                    });
-                }
-            }
-            ast::Stmt::ClassDef(class) => {
-                if class.name.as_str().starts_with("Test") {
-                    // Extract class-level markers (e.g., @parallel on class)
-                    let class_markers = markers::extract_class_markers(&class.decorator_list);
-
-                    for body_stmt in &class.body {
-                        match body_stmt {
-                            ast::Stmt::FunctionDef(method) => {
-                                if is_test_name(method.name.as_str()) {
-                                    // Combine class markers with method markers
-                                    let mut method_markers =
-                                        markers::extract_markers(&method.decorator_list);
-                                    // Class @parallel applies to all methods
-                                    for class_marker in &class_markers {
-                                        if !method_markers
-                                            .iter()
-                                            .any(|m| m.name == class_marker.name)
-                                        {
-                                            method_markers.push(class_marker.clone());
-                                        }
-                                    }
-                                    items.push(TestItem {
-                                        file: path.to_path_buf(),
-                                        function: method.name.to_string(),
-                                        class: Some(class.name.to_string()),
-                                        line: offset_to_line(&source, method.range.start().into()),
-                                        markers: method_markers,
-                                    });
-                                }
-                            }
-                            ast::Stmt::AsyncFunctionDef(method) => {
-                                if is_test_name(method.name.as_str()) {
-                                    let mut method_markers =
-                                        markers::extract_markers(&method.decorator_list);
-                                    for class_marker in &class_markers {
-                                        if !method_markers
-                                            .iter()
-                                            .any(|m| m.name == class_marker.name)
-                                        {
-                                            method_markers.push(class_marker.clone());
-                                        }
-                                    }
-                                    items.push(TestItem {
-                                        file: path.to_path_buf(),
-                                        function: method.name.to_string(),
-                                        class: Some(class.name.to_string()),
-                                        line: offset_to_line(&source, method.range.start().into()),
-                                        markers: method_markers,
-                                    });
-                                }
-                            }
-                            _ => {}
-                        }
+    for stmt in &suite {
+        if let Some(item) = make_item(path, stmt, None, &[], &lines) {
+            items.push(item);
+        } else if let ast::Stmt::ClassDef(class) = stmt {
+            if class.name.as_str().starts_with("Test") {
+                let inherited = markers::extract_class_markers(&class.decorator_list);
+                for method in &class.body {
+                    if let Some(item) =
+                        make_item(path, method, Some(class.name.as_str()), &inherited, &lines)
+                    {
+                        items.push(item);
+                    } else {
+                        reject_compound_tests(path, method, &lines)?;
                     }
                 }
             }
-            _ => {}
+        } else {
+            reject_compound_tests(path, stmt, &lines)?;
         }
     }
-
     Ok(items)
 }
 
-/// Extract tests from multiple files, optionally filtering by glob pattern.
-///
-/// Filter patterns (Go-style):
-/// - `test_user` - matches any test containing "test_user"
-/// - `test_*login` - glob pattern with wildcard
-/// - `TestClass/*` - matches all methods in TestClass (/ means ::)
-/// - `file.py::test_foo` - file-specific filtering
+fn apply_filter(items: &mut Vec<TestItem>, pattern: Option<&str>) -> Result<()> {
+    if let Some(pattern) = pattern.filter(|pattern| !pattern.is_empty()) {
+        let filter = TestFilter::new(pattern)
+            .with_context(|| format!("Invalid filter pattern '{pattern}'"))?;
+        items.retain(|item| filter.matches(&item.id()));
+    }
+    Ok(())
+}
+
+/// Extract tests from files. Any collection failure aborts the operation, so a
+/// passing result can never conceal an unreadable or syntactically broken file.
 pub fn extract_tests(files: &[PathBuf], filter_pattern: Option<&str>) -> Result<Vec<TestItem>> {
-    let mut all_items = Vec::new();
+    // Avoid starting the Rayon pool for the common single-file/edit loop.
+    // Indexed parallel collection preserves deterministic file and source order.
+    let mut items = if files.len() >= 128 {
+        files
+            .par_iter()
+            .map(|file| extract_tests_from_file(file))
+            .collect::<Result<Vec<_>>>()?
+            .into_iter()
+            .flatten()
+            .collect()
+    } else {
+        let mut items = Vec::new();
+        for file in files {
+            items.extend(extract_tests_from_file(file)?);
+        }
+        items
+    };
+    apply_filter(&mut items, filter_pattern)?;
+    Ok(items)
+}
 
+/// Strip a positional node selector for config lookup, indexing, and watching.
+pub fn selection_path(path: &Path) -> PathBuf {
+    path.to_str()
+        .and_then(|path| path.split_once("::"))
+        .map_or_else(|| path.to_path_buf(), |(file, _)| PathBuf::from(file))
+}
+
+struct NodeSelector {
+    file: PathBuf,
+    nodes: Vec<String>,
+    display: String,
+    matched: bool,
+}
+
+impl NodeSelector {
+    fn matches(&self, item: &TestItem) -> bool {
+        match self.nodes.as_slice() {
+            [name] => item
+                .class
+                .as_ref()
+                .map_or_else(|| item.function == *name, |class| class == name),
+            [class, method] => item.class.as_ref() == Some(class) && item.function == *method,
+            _ => false,
+        }
+    }
+}
+
+/// Collect directories, files, and exact positional node IDs in a single pass.
+/// Selectors accept `file.py::test_name`, `file.py::TestClass`, or
+/// `file.py::TestClass::test_method`; `-k` remains the separate glob filter.
+pub fn collect_tests(paths: &[PathBuf], filter_pattern: Option<&str>) -> Result<Vec<TestItem>> {
+    let mut roots = Vec::new();
+    let mut selectors = Vec::new();
+    for path in paths {
+        if let Some((file, nodes)) = path.to_str().and_then(|path| path.split_once("::")) {
+            let nodes: Vec<String> = nodes.split("::").map(str::to_owned).collect();
+            if file.is_empty()
+                || nodes.is_empty()
+                || nodes.len() > 2
+                || nodes.iter().any(String::is_empty)
+            {
+                bail!(
+                    "Invalid test selector '{}': expected file.py::test_name or file.py::TestClass::test_method",
+                    path.display()
+                );
+            }
+            let file = PathBuf::from(file);
+            if !std::fs::metadata(&file)
+                .with_context(|| format!("Cannot collect {}", file.display()))?
+                .is_file()
+            {
+                bail!(
+                    "Invalid test selector '{}': selectors require a Python file",
+                    path.display()
+                );
+            }
+            selectors.push(NodeSelector {
+                file: canonical_path(&file)?,
+                nodes,
+                display: path.display().to_string(),
+                matched: false,
+            });
+        } else {
+            roots.push(path.clone());
+        }
+    }
+    let mut files = find_test_files(&roots)?;
+    if selectors.is_empty() {
+        return extract_tests(&files, filter_pattern);
+    }
+    let unrestricted: HashSet<PathBuf> = files
+        .iter()
+        .map(|file| canonical_path(file))
+        .collect::<Result<_>>()?;
+    let mut identities = unrestricted.clone();
+    let mut selectors_by_file: HashMap<PathBuf, Vec<usize>> = HashMap::new();
+    for (index, selector) in selectors.iter().enumerate() {
+        selectors_by_file
+            .entry(selector.file.clone())
+            .or_default()
+            .push(index);
+        let file = selection_path(Path::new(&selector.display));
+        if file.extension().is_none_or(|extension| extension != "py") {
+            bail!(
+                "Cannot collect {}: expected a Python (.py) file",
+                file.display()
+            );
+        }
+        if identities.insert(selector.file.clone()) {
+            files.push(file);
+        }
+    }
+    files.sort();
+    let mut items = Vec::new();
     for file in files {
-        match extract_tests_from_file(file) {
-            Ok(items) => all_items.extend(items),
-            Err(e) => eprintln!("Warning: {}", e),
+        let identity = canonical_path(&file)?;
+        let all = unrestricted.contains(&identity);
+        let file_selectors = selectors_by_file
+            .get(&identity)
+            .map_or(&[][..], Vec::as_slice);
+        for item in extract_tests_from_file(&file)? {
+            let mut selected = all;
+            for &index in file_selectors {
+                let selector = &mut selectors[index];
+                if selector.matches(&item) {
+                    selector.matched = true;
+                    selected = true;
+                }
+            }
+            if selected {
+                items.push(item);
+            }
         }
     }
-
-    // Apply glob-based filter if provided
-    if let Some(pattern) = filter_pattern {
-        if !pattern.is_empty() {
-            let test_filter = TestFilter::new(pattern)
-                .map_err(|e| anyhow::anyhow!("Invalid filter pattern '{}': {}", pattern, e))?;
-            all_items.retain(|item| test_filter.matches(&item.id()));
+    for selector in selectors {
+        if !selector.matched {
+            bail!(
+                "Test selector '{}' did not match any test",
+                selector.display
+            );
         }
     }
-
-    Ok(all_items)
+    apply_filter(&mut items, filter_pattern)?;
+    Ok(items)
 }

@@ -14,7 +14,7 @@ use std::path::Path;
 use anyhow::Result;
 use tempfile::TempDir;
 
-use helpers::{dedent, write_python_file};
+use helpers::dedent;
 
 fn write_file(path: &Path, content: &str) -> Result<()> {
     if let Some(parent) = path.parent() {

@@ -12,7 +12,7 @@ pub fn get_cache_dir() -> PathBuf {
     // Hash the current directory to isolate per-project caches
     let cwd = std::env::current_dir().unwrap_or_default();
     let hash = xxh64::xxh64(cwd.to_string_lossy().as_bytes(), 0);
-    let project_hash = &format!("{:x}", hash)[..16]; // First 16 chars
+    let project_hash = format!("{hash:016x}");
 
     cache_base.join(project_hash)
 }
