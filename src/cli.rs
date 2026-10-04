@@ -259,6 +259,23 @@ fn runner_options(options: &Options, config: config::Config) -> Result<runner::R
     })
 }
 
+fn execution_context(options: &runner::RunOptions) -> String {
+    let python = crate::worker_pool::resolve_python(options.python.as_deref());
+    let canonical = python.canonicalize().ok();
+    let metadata = std::fs::metadata(&python)
+        .ok()
+        .map(|metadata| (metadata.len(), metadata.modified().ok()));
+    format!(
+        "python={python:?};canonical={canonical:?};metadata={metadata:?};isolation={:?};parallel={};jobs={:?};async={};timeout={:?};fail_fast={}",
+        options.isolation,
+        options.parallel,
+        options.jobs,
+        options.async_concurrency,
+        options.timeout,
+        options.fail_fast
+    )
+}
+
 fn execute(paths: &[PathBuf], options: &Options) -> Result<i32> {
     validate_paths(paths)?;
     let runtime = runner_options(options, config::Config::load(&selection_path(&paths[0]))?)?;
@@ -282,16 +299,7 @@ fn execute(paths: &[PathBuf], options: &Options) -> Result<i32> {
     // Normal runs never instantiate the selector or parse unrelated source files.
     let mut selector = options.changed.then(selection::TestSelector::new);
     if let Some(selector) = &mut selector {
-        selector.set_execution_context(&format!(
-            "python={:?};isolation={:?};parallel={};jobs={:?};async={};timeout={:?};fail_fast={}",
-            runtime.python,
-            runtime.isolation,
-            runtime.parallel,
-            runtime.jobs,
-            runtime.async_concurrency,
-            runtime.timeout,
-            runtime.fail_fast
-        ));
+        selector.set_execution_context(&execution_context(&runtime));
     }
     let mut selected_out = Vec::new();
     let mut skipped = Vec::new();
