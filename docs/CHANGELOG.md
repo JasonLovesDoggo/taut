@@ -1,34 +1,33 @@
 # Changelog
 
-All notable changes to this project will be documented in this file.
+## Unreleased
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+### Execution
 
-## [Unreleased]
+- Run the full selected suite by default, using reusable Python worker processes and parallel scheduling.
+- Add explicit same-loop async concurrency, per-test timeouts, fail-fast scheduling, and serial markers.
+- Await async tests without a plugin; support tests that start their own threads.
+- Keep fresh process-per-test isolation available for tests that need a new interpreter.
+- Capture Python and native output separately from the worker protocol, attribute async task output, and report setup, execution, and cleanup failures.
+- Select the test interpreter from CLI/configuration, environment, installed executable location, or a project virtual environment.
 
-### Added
-- Added a markers system (`src/markers.rs`) that parses Python decorators such as `@skip`, `@mark`, and `@parallel`.
-- Added Python decorators in `python/taut/__init__.py` so test authors can use `skip`, `mark`, and `parallel` directly.
-- Added `@skip` support for unconditional skips as well as explicit reasons via both positional and keyword arguments.
-- Added the `@mark` decorator for attaching metadata like `slow=True` or `group="api"` to tests.
-- Added an opt-in `@parallel` decorator so sequential tests run first and parallel-safe tests run concurrently afterward.
-- Added glob-pattern test filtering in `src/filter.rs`, powering the `-k` flag with support for `test_*`, `file.py::test_name`, and `TestClass/test_method`.
-- Added configuration loading in `src/config.rs` to read `max_workers` from the `[tool.taut]` table in `pyproject.toml`.
-- Added fail-first sorting in `src/selection.rs` so tests that failed last run execute before the rest for faster feedback.
-- `docs/ROADMAP.md` defining TAUT's async-first, minimal-authoring roadmap.
-- Initialized this changelog in Keep a Changelog 1.1.0 format.
-- Expanded discovery rules: test files can be `test_*.py` or `_test*.py`, and test callables can be `test_*` or `_test*`.
-- First-class async support for `async def` tests.
-- `--isolation` option with `process-per-test` (default) and `process-per-run`.
-- Captured test output fields (`stdout`/`stderr`) in `TestResult`.
-- `sys.monitoring` coverage collection in `process-per-run` mode (with `sys.settrace` fallback).
-- Rust integration tests for discovery rules (`tests/discovery_rules.rs`).
-- Warm worker pool (`src/worker_pool.rs`) for `process-per-run` mode: N long-lived Python workers with JSON-over-stdio protocol, crash recovery, and parallel test dispatch. Performance depends on the workload; use the validated benchmark harness in `benches/compare_execution.py` to compare execution modes.
-- `-j`/`--jobs` flag now applies to worker pool in `process-per-run` mode.
-- `taut list` command: show discovered tests without running them.
-- `taut watch` command: watch for file changes and re-run affected tests automatically.
-- `TestItem::id()` method for consistent test identification (e.g., `path/to/test.py::ClassName::test_method`).
+### Test authoring and collection
 
-### Fixed
-- Flaky integration test `incremental_run_reruns_changed_tests` caused by Python's `__pycache__` bytecode caching.
+- Add function-scoped fixtures, fixture dependencies, `conftest.py`, autouse fixtures, sync/async `yield` cleanup, `tmp_path`, and `monkeypatch`.
+- Collect functions and class methods from `test_*.py`, `_test*.py`, and `*_test.py`; accept explicit Python files and exact node IDs.
+- Deduplicate overlapping collection roots and skip common dependency/build directories during directory discovery.
+- Keep `taut list` free of test-module imports.
+
+### CLI and configuration
+
+- Add quiet output, versioned JSON reports, explicit exit codes, and strict configuration validation.
+- Run once when watch starts, then rerun on Python or project configuration changes; keep watching after collection errors.
+- Make dependency selection an explicit `--changed` mode with conservative tracked-source invalidation. Plain `taut` and `--no-cache` perform full runs without dependency tracing.
+- Distinguish intentionally skipped, unchanged, executed, and not-run tests in reports.
+
+### Packaging and verification
+
+- Ship a native CLI and pure Python package in platform wheels, without a PyO3 command trampoline.
+- Support `python -m taut` and Python 3.12–3.14.
+- Add installed-wheel checks and runtime regression coverage.
+- Add reproducible comparisons against pytest, pytest-asyncio, and pytest-xdist. Benchmark samples must verify exact test execution before their timings are accepted.

@@ -1,91 +1,82 @@
 # Installation
 
-## From PyPI (Recommended)
+Taut requires Python 3.12 or later. Prebuilt wheels install a native `taut` executable and the Python package together. Rust is required only when building from source or installing on a platform without a compatible wheel.
 
-Install taut with pip: (WIP)
+## Install in your project
 
-```bash 
-pip install taut
-```
+With an activated virtual environment:
 
-This gives you both:
-- The `taut` command-line tool
-- The Python decorators (`@skip`, `@mark`, `@parallel`)
-
-Verify the installation:
-
-```bash
+```sh
+uv pip install taut
 taut --version
 ```
 
-## From Source
+Or use pip:
 
-If you want to build from source, you'll need Rust and maturin.
-
-### Prerequisites
-
-Install Rust using [rustup](https://rustup.rs/):
-
-```bash
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```sh
+python -m pip install taut
+python -m taut --version
 ```
 
-Install maturin:
+For a project managed by uv, keep taut in your development dependencies:
 
-```bash
-uv tool install maturin 
+```sh
+uv add --dev taut
+uv run taut
 ```
 
-### Build and Install
+To start a new environment first:
 
-Clone and build:
+```sh
+uv venv
+source .venv/bin/activate
+```
 
-```bash
+On Windows PowerShell, activate with `.venv\Scripts\Activate.ps1`.
+
+Install taut alongside the dependencies your tests need. `python -m taut` runs tests with that Python interpreter; the native command also discovers active and project virtual environments. Override it explicitly with `taut --python /path/to/python` when needed.
+
+## Build from source
+
+These docs describe the development branch. To try changes that have not yet reached PyPI, build the checkout with a current stable Rust toolchain:
+
+```sh
 git clone https://github.com/JasonLovesDoggo/taut
 cd taut
-maturin develop --release
-```
-
-This builds the Rust code and installs taut in your current Python environment.
-
-### Development Mode
-
-For development:
-
-```bash
-maturin develop
-```
-
-## Verify Installation
-
-```bash
-# Check CLI
+uv venv
+source .venv/bin/activate
+uv pip install -e .
 taut --version
-
-# Check Python imports
-python -c "from taut import skip, mark, parallel; print('OK')"
+python -c "from taut import fixture, mark, parallel, skip"
 ```
 
-## System Requirements
+Use `.venv\Scripts\Activate.ps1` for the activation step on Windows. Editable installation keeps Python sources available from the checkout; rerun `uv pip install -e .` after changing Rust or the embedded Python worker.
 
-- **Python**: 3.12 or later
+To build a release wheel:
 
-## Standalone Binary
-
-If you only need the CLI (no Python decorators), you can build a standalone binary:
-
-```bash
-git clone https://github.com/JasonLovesDoggo/taut
-cd taut
-cargo build --release
+```sh
+uvx maturin build --release --locked --out dist
 ```
 
-The binary will be at `target/release/taut`. Add it to your PATH:
+Install the resulting `.whl` into a clean environment to test distribution behavior. A source-tree run can hide missing files or a wrong interpreter.
 
-```bash
-# Option 1: Add to PATH
-export PATH="$PATH:$(pwd)/target/release"
+## Run the development checks
 
-# Option 2: Copy to /usr/local/bin
-sudo cp target/release/taut /usr/local/bin/
+On macOS or Linux:
+
+```sh
+cargo fmt --all -- --check
+cargo clippy --locked --all-targets --all-features -- -D warnings
+PYTHONPATH=python cargo test --locked --all-targets
 ```
+
+On Windows PowerShell:
+
+```powershell
+cargo fmt --all -- --check
+cargo clippy --locked --all-targets --all-features -- -D warnings
+$env:PYTHONPATH = (Resolve-Path python).Path
+cargo test --locked --all-targets
+```
+
+`cargo build --release` also builds `target/release/taut` (`taut.exe` on Windows). When running that binary directly, install the Python package into the selected environment if your tests import taut decorators or fixtures.

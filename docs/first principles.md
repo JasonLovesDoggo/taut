@@ -1,36 +1,31 @@
-# Guiding Principles
+# Design principles
 
-## Core Axioms
+## Run the work the command promises
 
-1. **Determinism** — Same inputs, same result. Always. Flaky tests are bugs in the framework.
+A normal run executes the selected tests. Cached results are an explicit opt-in, and reports distinguish executed, skipped, unchanged, and not-run tests. Failed or incomplete execution is never a successful benchmark sample.
 
-2. **Independence** — Tests don't share mutable state. Order doesn't matter. Parallel by default.
+## Keep the common path small
 
-3. **Speed** — Collection is O(n), not O(n²). Import nothing during discovery. Parallelize execution.
+Rust collects tests without importing Python. A native command avoids starting Python just to parse CLI flags. Reusable workers amortize interpreter startup and module imports. Dependency tracing is reserved for `--changed` runs.
 
-4. **Locality** — Failures point to the problem. No hunting. Assertion output is a complete diagnostic.
+These choices have boundaries: static collection does not reproduce arbitrary runtime-generated tests, and reusable interpreters retain process state. Make those boundaries visible.
 
-5. **Composability** — Fixtures compose. Markers compose. Plugins extend without modifying core.
+## Concurrency must be understandable
 
-## Design Constraints
+Worker processes provide the default parallelism. Same-loop async overlap is a separate opt-in for independent I/O-bound tests. Serial markers create scheduling barriers. Fresh-process isolation provides a stronger state boundary at an explicit cost.
 
-- Static collection (AST) for speed, dynamic fallback for compatibility
-- Rust orchestrates, Python executes
-- Work-stealing over static partitioning
-- Fixture scopes: function < class < module < session (only depend on equal or broader)
-- Teardown is reverse setup order
+Do not silently trade correct results for a faster number. Tests still need to await tasks, join threads, restore shared state, and release external resources.
 
-## What We're Fixing
+## Make failures actionable
 
-| pytest                        | us                        |
-|-------------------------------|---------------------------|
-| imports everything to collect | parse AST, import nothing |
-| single-threaded default       | parallel default          |
-| xdist bolted on               | native worker pool        |
-| noisy output                  | quiet unless failure      |
+Keep the test ID, source location, exception, traceback, and captured output together. Reject invalid configuration instead of falling back silently. Keep structured output parseable and exit codes useful to scripts.
 
-## Non-Goals
+## Start with a coherent supported surface
 
-- 100% pytest compatibility (aim for 95% of common usage)
-- Plugin system as powerful as pytest's (too much rope)
-- Supporting every edge case over being fast
+Ordinary functions, async tests, test classes, function-scoped fixtures, and explicit cleanup should compose predictably. Unsupported fixture lifetimes and plugin hooks should remain clear limits. Compatibility claims should describe tested behavior, not an invented percentage of another runner's ecosystem.
+
+## Benchmark complete execution
+
+Measure startup, collection, scheduling, test bodies, reporting, and shutdown when comparing user-visible runs. Also measure individual stages, but label them separately. Verify the work completed, record the environment and commands, interleave runner order, and retain raw samples.
+
+Pytest-asyncio and pytest-xdist are useful comparisons, including their combined process-based async execution. A result on one synthetic workload does not establish a universal fastest-runner claim.
