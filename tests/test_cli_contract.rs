@@ -146,3 +146,40 @@ fn quiet_suppresses_progress_but_retains_summary() {
     assert_eq!(stdout.lines().count(), 1);
     assert!(stdout.starts_with("1 passed"));
 }
+
+#[test]
+fn default_execution_has_no_dependency_tracing() {
+    let project = TempDir::new().unwrap();
+    fs::write(
+        project.path().join("test_trace.py"),
+        "import sys\ndef test_trace():\n    assert sys.gettrace() is None\n",
+    )
+    .unwrap();
+    assert_eq!(run(&project, &[]).status.code(), Some(0));
+}
+
+#[test]
+fn fail_fast_distinguishes_unstarted_from_skipped_tests() {
+    let project = TempDir::new().unwrap();
+    fs::write(project.path().join("test_stop.py"), "from pathlib import Path\ndef test_first():\n    assert False\ndef test_second():\n    Path('ran_second').touch()\n").unwrap();
+    let result = run(&project, &["-x", "-j", "1", "--json"]);
+    assert_eq!(result.status.code(), Some(1));
+    let report = json(&result);
+    assert_eq!(report["summary"]["executed"], 1);
+    assert_eq!(report["summary"]["not_run"], 1);
+    assert_eq!(report["summary"]["skipped"], 0);
+    assert!(!project.path().join("ran_second").exists());
+}
+
+#[test]
+fn missing_interpreter_is_a_setup_error() {
+    let project = TempDir::new().unwrap();
+    fs::write(
+        project.path().join("test_pass.py"),
+        "def test_pass(): pass\n",
+    )
+    .unwrap();
+    let result = run(&project, &["--python", "/does/not/exist/python", "--json"]);
+    assert_eq!(result.status.code(), Some(2));
+    assert!(json(&result)["error"].as_str().unwrap().contains("Python"));
+}

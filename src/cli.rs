@@ -434,7 +434,19 @@ fn watch_relevant(path: &Path) -> bool {
     !path.components().any(|component| {
         matches!(
             component.as_os_str().to_str(),
-            Some(".git" | ".venv" | "venv" | "__pycache__" | ".taut")
+            Some(
+                ".git"
+                    | ".venv"
+                    | "venv"
+                    | "__pycache__"
+                    | ".taut"
+                    | ".tox"
+                    | ".nox"
+                    | "node_modules"
+                    | "target"
+                    | "build"
+                    | "dist"
+            )
         )
     }) && (path.extension().is_some_and(|ext| ext == "py")
         || path
