@@ -134,6 +134,7 @@ impl<'a> Classes<'a> {
                 }
                 _ => {
                     let mut conditional_tests = Vec::new();
+                    let mut conditional_aliases = HashMap::new();
                     visit_scope(stmt, &mut |statement| {
                         if let ast::Stmt::ClassDef(class) = statement {
                             let unittest =
@@ -154,19 +155,53 @@ impl<'a> Classes<'a> {
                                 ));
                             }
                         }
+                        let value = match statement {
+                            ast::Stmt::Assign(assign) => Some(assign.value.as_ref()),
+                            ast::Stmt::AnnAssign(assign) => assign.value.as_deref(),
+                            _ => None,
+                        };
+                        if let Some(value) = value {
+                            let alias = match value {
+                                ast::Expr::Name(name) => conditional_aliases
+                                    .get(name.id.as_str())
+                                    .cloned()
+                                    .unwrap_or_else(|| result.resolve_symbol(value)),
+                                _ => result.resolve_symbol(value),
+                            };
+                            if matches!(
+                                alias,
+                                Symbol::Class(ClassKey::Local(_)) | Symbol::UncertainClass { .. }
+                            ) {
+                                for name in statement_names(statement) {
+                                    conditional_aliases.insert(name.to_owned(), alias.clone());
+                                }
+                            }
+                        }
                     });
                     result.conditional_tests.extend(conditional_tests);
                     // Conditional module rebinding makes a previously known base
                     // uncertain. Reject uses of it instead of guessing a branch.
                     for name in statement_names(stmt) {
-                        let symbol = match result.symbols.get(name) {
-                            Some(Symbol::Class(ClassKey::Local(index))) => Symbol::UncertainClass {
+                        let possible_classes =
+                            [result.symbols.get(name), conditional_aliases.get(name)];
+                        let mut possible_unittest = None;
+                        for symbol in possible_classes.into_iter().flatten() {
+                            let unittest = match symbol {
+                                Symbol::Class(ClassKey::Local(index)) => {
+                                    result.classes[*index].unittest
+                                }
+                                Symbol::UncertainClass { unittest, .. } => *unittest,
+                                _ => continue,
+                            };
+                            possible_unittest =
+                                Some(possible_unittest.unwrap_or(false) || unittest);
+                        }
+                        let symbol = possible_unittest.map_or(Symbol::Unknown, |unittest| {
+                            Symbol::UncertainClass {
                                 offset: stmt.range().start().into(),
-                                unittest: result.classes[*index].unittest,
-                            },
-                            Some(symbol @ Symbol::UncertainClass { .. }) => symbol.clone(),
-                            _ => Symbol::Unknown,
-                        };
+                                unittest,
+                            }
+                        });
                         result.symbols.insert(name.to_owned(), symbol);
                     }
                 }
@@ -642,7 +677,7 @@ fn known_non_callable(statement: &ast::Stmt) -> bool {
 // Return names bound in this scope. Function and class bodies create new scopes;
 // compound statement bodies do not. Used to invalidate uncertain base aliases
 // and to reject conditional creation or shadowing of test attributes.
-fn statement_names(stmt: &ast::Stmt) -> Vec<&str> {
+pub(super) fn statement_names(stmt: &ast::Stmt) -> Vec<&str> {
     fn suite(body: &[ast::Stmt]) -> Vec<&str> {
         body.iter().flat_map(statement_names).collect()
     }

@@ -366,6 +366,40 @@ fn reject_callable_test_aliases(suite: &[ast::Stmt], path: &Path, lines: &LineIn
     }) {
         return Ok(());
     }
+    fn assignment<'a>(
+        target: &'a ast::Expr,
+        value: &'a ast::Expr,
+        names: &HashSet<&'a str>,
+        bindings: &mut Vec<(&'a str, bool)>,
+    ) {
+        let targets = match target {
+            ast::Expr::Tuple(tuple) => Some(&tuple.elts),
+            ast::Expr::List(list) => Some(&list.elts),
+            _ => None,
+        };
+        let values = match value {
+            ast::Expr::Tuple(tuple) => Some(&tuple.elts),
+            ast::Expr::List(list) => Some(&list.elts),
+            _ => None,
+        };
+        if let (Some(targets), Some(values)) = (targets, values)
+            && targets.len() == values.len()
+        {
+            for (target, value) in targets.iter().zip(values) {
+                assignment(target, value, names, bindings);
+            }
+        } else {
+            let callable = !matches!(target, ast::Expr::Starred(_))
+                && (matches!(value, ast::Expr::Lambda(_))
+                    || matches!(value, ast::Expr::Name(name) if names.contains(name.id.as_str())));
+            bindings.extend(
+                classes::target_names(target)
+                    .into_iter()
+                    .map(|name| (name, callable)),
+            );
+        }
+    }
+
     let mut callables = HashSet::new();
     let mut invalid = None;
     for stmt in suite {
@@ -382,7 +416,8 @@ fn reject_callable_test_aliases(suite: &[ast::Stmt], path: &Path, lines: &LineIn
                 | ast::Stmt::Match(_)
         );
         classes::visit_scope(stmt, &mut |statement| {
-            let (targets, value) = match statement {
+            let mut bindings = Vec::new();
+            match statement {
                 ast::Stmt::FunctionDef(function) => {
                     callables.insert(function.name.as_str());
                     return;
@@ -397,23 +432,31 @@ fn reject_callable_test_aliases(suite: &[ast::Stmt], path: &Path, lines: &LineIn
                     }
                     return;
                 }
-                ast::Stmt::Assign(assign) => (
-                    assign
-                        .targets
-                        .iter()
-                        .flat_map(classes::target_names)
-                        .collect::<Vec<_>>(),
-                    assign.value.as_ref(),
-                ),
-                ast::Stmt::AnnAssign(assign) if assign.value.is_some() => (
-                    classes::target_names(&assign.target),
-                    assign.value.as_deref().unwrap(),
-                ),
+                ast::Stmt::Assign(assign) => {
+                    for target in &assign.targets {
+                        assignment(target, &assign.value, &callables, &mut bindings);
+                    }
+                }
+                ast::Stmt::AnnAssign(assign) => {
+                    if let Some(value) = &assign.value {
+                        assignment(&assign.target, value, &callables, &mut bindings);
+                    }
+                }
+                ast::Stmt::Import(_)
+                | ast::Stmt::ImportFrom(_)
+                | ast::Stmt::Delete(_)
+                | ast::Stmt::AugAssign(_)
+                    if !conditional =>
+                {
+                    for name in classes::statement_names(statement) {
+                        callables.remove(name);
+                    }
+                }
                 _ => return,
-            };
-            let callable = matches!(value, ast::Expr::Lambda(_))
-                || matches!(value, ast::Expr::Name(name) if callables.contains(name.id.as_str()));
-            for name in targets {
+            }
+            // Python evaluates every RHS before mutating any assignment target.
+            // Snapshot callability first so swaps and unpacking retain aliases.
+            for (name, callable) in bindings {
                 if callable {
                     if is_test_name(name) {
                         invalid.get_or_insert((name, usize::from(statement.range().start())));
