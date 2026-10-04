@@ -20,7 +20,7 @@ fail-fast = false
 | `fail-fast` | `false` | Stop scheduling after the first failure |
 | `python` | Automatically selected | Interpreter executable or path |
 
-The aliases `max_workers`, `async_concurrency`, and `fail_fast` are also accepted. Unknown settings, invalid TOML, zero worker counts, and invalid timeouts are errors. Taut stops at the nearest `pyproject.toml`, even when that file has no `[tool.taut]` table.
+The aliases `max_workers`, `async_concurrency`, and `fail_fast` are also accepted. Unknown settings, invalid TOML, zero worker counts, and invalid timeouts are errors. Taut locates configuration from the first selected path and stops at its nearest `pyproject.toml`, even when that file has no `[tool.taut]` table.
 
 CLI values override corresponding configured values:
 
