@@ -48,6 +48,16 @@ Interpreter selection uses this order:
 
 `python -m taut` supplies its interpreter through `TAUT_PYTHON` when that variable is unset. Explicit interpreter configuration still takes precedence. A relative configuration path such as `.venv/bin/python` is resolved against its `pyproject.toml`; a bare command such as `python3.13` uses PATH. On Windows, a virtual environment's interpreter is `.venv\Scripts\python.exe`.
 
+## Watch mode
+
+```sh
+taut watch tests
+```
+
+Watch runs once immediately, then reruns the same selection when Python files or `pyproject.toml`, `pytest.ini`, `setup.cfg`, or `setup.py` change. It keeps watching after a collection error so you can fix the file and retry. Run flags such as `-k`, `--timeout`, and `--changed` also apply in watch mode.
+
+Watch and changed-test tracking find the nearest project boundary marked by one of those configuration files or `.git`. This includes application sources above a selected `tests` directory. Generated and environment directories are ignored. Taut's own settings still come from `[tool.taut]` in `pyproject.toml`.
+
 ## Changed runs
 
 A normal `taut` run executes the full selected suite without dependency tracing. `--no-cache` makes that default explicit. Opt into incremental selection with:

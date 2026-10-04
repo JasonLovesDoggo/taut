@@ -57,6 +57,6 @@ taut watch .
 
 Fail-fast stops scheduling after a failure; already running tests may finish. A timeout fails the test and can terminate its worker if it does not return. Hard termination cannot run Python cleanup.
 
-`--json` emits structured results with counts, timings, errors, and captured output. `watch` runs once immediately, then reruns on Python or `pyproject.toml` changes. Stop it with Ctrl+C.
+`--json` emits structured results with counts, timings, errors, and captured output. `watch` runs once immediately, then reruns on Python or project configuration changes. Stop it with Ctrl+C.
 
 [Fixtures and async cleanup](../guide/writing-tests.md#fixtures) · [Project configuration](../guide/configuration.md) · [Every CLI option](../reference/cli.md)
