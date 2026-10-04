@@ -381,7 +381,12 @@ mod tests {
             &HashMap::new(),
         );
         assert!(!db.needs_run(&test).should_run());
+        let mut stable = Vec::new();
+        db.write_cache(&mut stable).unwrap();
+        let stable: DependencyDatabase = serde_json::from_slice(&stable).unwrap();
+        assert_eq!(stable.stats().passed_tests, 1);
         fs::write(&helper, "VALUE = 2\n").unwrap();
+        fs::write(&helper, "VALUE = 1\n").unwrap();
         let mut serialized = Vec::new();
         db.write_cache(&mut serialized).unwrap();
         let restored: DependencyDatabase = serde_json::from_slice(&serialized).unwrap();

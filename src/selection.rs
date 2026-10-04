@@ -3,6 +3,7 @@ use crate::depdb::{DependencyDatabase, TestRunDecision, canonical_path, fingerpr
 use crate::discovery::TestItem;
 use crate::runner::TestResult;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::fs;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
@@ -24,6 +25,7 @@ impl TestSelection {
 pub struct TestSelector {
     depdb: DependencyDatabase,
     block_index: HashMap<PathBuf, FileBlocks>,
+    python_environment: Option<PathBuf>,
 }
 
 impl TestSelector {
@@ -31,6 +33,7 @@ impl TestSelector {
         let mut selector = Self {
             depdb: DependencyDatabase::load(),
             block_index: HashMap::new(),
+            python_environment: None,
         };
         selector.set_execution_context("");
         selector
@@ -54,11 +57,29 @@ impl TestSelector {
         self.depdb.set_context(format!("{:016x}", hash.digest()));
     }
 
+    /// Track installed-package metadata for the selected virtual environment.
+    /// Preserve the interpreter's original path: bin/python is often a symlink
+    /// to a system interpreter outside the virtual environment.
+    pub fn set_python_environment(&mut self, interpreter: &Path) {
+        self.python_environment = interpreter
+            .parent()
+            .and_then(Path::parent)
+            .filter(|root| root.join("pyvenv.cfg").is_file())
+            .map(canonical_path);
+    }
+
     /// Snapshot project sources, including application modules outside the test
     /// directory. Reading source bytes is cheaper and safer than AST-based
     /// dependency inference. Any addition, removal or edit reruns the suite.
     pub fn index_files(&mut self, paths: &[PathBuf]) {
         let roots: BTreeSet<_> = paths.iter().map(|path| project_root(path)).collect();
+        let environments: BTreeSet<_> = roots
+            .iter()
+            .flat_map(|root| [root.join(".venv"), root.join("venv")])
+            .chain(std::env::var_os("VIRTUAL_ENV").map(PathBuf::from))
+            .chain(self.python_environment.clone())
+            .map(|path| canonical_path(&path))
+            .collect();
         let mut files = BTreeMap::new();
         let mut incomplete = roots.is_empty();
         for root in &roots {
@@ -66,7 +87,10 @@ impl TestSelector {
                 .follow_links(true)
                 .into_iter()
                 .filter_entry(|entry| {
-                    !entry.file_type().is_dir() || !excluded_directory(entry.file_name())
+                    entry.depth() == 0
+                        || !entry.file_type().is_dir()
+                        || (!excluded_directory(entry.file_name())
+                            && !environments.contains(entry.path()))
                 })
             {
                 match entry {
@@ -83,6 +107,9 @@ impl TestSelector {
                     Err(_) => incomplete = true,
                 }
             }
+        }
+        for environment in environments {
+            snapshot_environment(&environment, &mut files, &mut incomplete);
         }
         // Imported helpers outside the root remain shared dependencies, even
         // when later tests reuse Python's module cache and emit no import lines.
@@ -246,4 +273,84 @@ fn snapshot_file(path: &Path) -> bool {
                 | "requirements.txt"
         )
     )
+}
+
+/// Inspect metadata only. Package installation, removal, and editable-install
+/// changes invalidate the cache without walking thousands of package sources.
+/// Manual edits to untraced installed code remain outside --changed's scope.
+fn snapshot_environment(
+    environment: &Path,
+    files: &mut BTreeMap<PathBuf, String>,
+    incomplete: &mut bool,
+) {
+    snapshot_optional_file(&environment.join("pyvenv.cfg"), files, incomplete);
+    let mut package_directories =
+        BTreeSet::from([canonical_path(&environment.join("Lib/site-packages"))]);
+    for library in [environment.join("lib"), environment.join("lib64")] {
+        for entry in directory_entries(&library, incomplete) {
+            if entry.is_dir() {
+                package_directories.insert(canonical_path(&entry.join("site-packages")));
+            }
+        }
+    }
+    for directory in package_directories {
+        for path in directory_entries(&directory, incomplete) {
+            let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            if name.ends_with(".pth") || name.ends_with(".egg-link") {
+                snapshot_optional_file(&path, files, incomplete);
+            } else if name.ends_with(".dist-info") || name.ends_with(".egg-info") {
+                if path.is_dir() {
+                    // Core distribution metadata lives at the top level.
+                    // Nested license directories need no source traversal.
+                    for metadata in directory_entries(&path, incomplete) {
+                        if !metadata.is_dir() {
+                            snapshot_optional_file(&metadata, files, incomplete);
+                        }
+                    }
+                } else {
+                    // Legacy egg-info can be a single metadata file.
+                    snapshot_optional_file(&path, files, incomplete);
+                }
+            }
+        }
+    }
+}
+
+fn directory_entries(directory: &Path, incomplete: &mut bool) -> Vec<PathBuf> {
+    match fs::read_dir(directory) {
+        Ok(entries) => entries
+            .filter_map(|entry| match entry {
+                Ok(entry) => Some(entry.path()),
+                Err(_) => {
+                    *incomplete = true;
+                    None
+                }
+            })
+            .collect(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(_) => {
+            *incomplete = true;
+            Vec::new()
+        }
+    }
+}
+
+fn snapshot_optional_file(
+    path: &Path,
+    files: &mut BTreeMap<PathBuf, String>,
+    incomplete: &mut bool,
+) {
+    let path = canonical_path(path);
+    if files.contains_key(&path) {
+        return;
+    }
+    match fingerprint_file(&path) {
+        Ok(checksum) => {
+            files.insert(path, checksum);
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => *incomplete = true,
+    }
 }
