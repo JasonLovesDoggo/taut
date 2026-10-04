@@ -149,7 +149,7 @@ fn parse_decorator(decorator: &ast::Expr) -> Option<Marker> {
         }
 
         // @skip("reason"), @mark(slow=True), @parallel()
-        ast::Expr::Call(call) => parse_call_decorator(&call),
+        ast::Expr::Call(call) => parse_call_decorator(call),
 
         // @taut.skip, @taut.parallel, etc. (attribute access)
         ast::Expr::Attribute(attr) => {
@@ -183,24 +183,24 @@ fn parse_call_decorator(call: &ast::ExprCall) -> Option<Marker> {
     let mut args = MarkerArgs::default();
 
     // Parse positional arguments (mainly for @skip("reason"))
-    if let Some(first_arg) = call.args.first() {
-        if let Some(value) = expr_to_string(first_arg) {
-            args.reason = Some(value);
-        }
+    if let Some(first_arg) = call.args.first()
+        && let Some(value) = expr_to_string(first_arg)
+    {
+        args.reason = Some(value);
     }
 
     // Parse keyword arguments
     for keyword in &call.keywords {
-        if let Some(ref arg_name) = keyword.arg {
-            if let Some(value) = expr_to_marker_value(&keyword.value) {
-                // Handle reason= for skip
-                if arg_name.as_str() == "reason" {
-                    if let MarkerValue::String(s) = &value {
-                        args.reason = Some(s.clone());
-                    }
-                } else {
-                    args.kwargs.insert(arg_name.to_string(), value);
+        if let Some(ref arg_name) = keyword.arg
+            && let Some(value) = expr_to_marker_value(&keyword.value)
+        {
+            // Handle reason= for skip
+            if arg_name.as_str() == "reason" {
+                if let MarkerValue::String(s) = &value {
+                    args.reason = Some(s.clone());
                 }
+            } else {
+                args.kwargs.insert(arg_name.to_string(), value);
             }
         }
     }
