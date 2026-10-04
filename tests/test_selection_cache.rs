@@ -112,6 +112,13 @@ fn external_import_is_shared_even_when_later_coverage_omits_it() {
     );
     record(&mut selector, &second, vec![second.file.clone()]);
     let items = [first, second];
+    // The first trace discovered an external dependency after execution.
+    // Establish its pre-run fingerprint before caching a successful run.
+    assert_eq!(selector.select_tests(&items).run_count(), 2);
+    selector.index_files(std::slice::from_ref(&tests));
+    for test in &items {
+        record(&mut selector, test, vec![test.file.clone()]);
+    }
     assert_eq!(selector.select_tests(&items).skip_count(), 2);
     fs::write(&helper, "VALUE = 2\n").unwrap();
     selector.index_files(std::slice::from_ref(&tests));
@@ -181,4 +188,36 @@ fn removed_and_shifted_blocks_do_not_remain_in_the_database() {
     db.update_blocks(&FileBlocks::from_file(&test.file).unwrap());
     assert_eq!(db.stats().total_blocks, 1);
     assert!(db.needs_run(&test).should_run());
+}
+
+#[test]
+fn external_source_changed_after_import_cannot_certify_new_bytes() {
+    let (_tmp, tests, test) = project();
+    let external = TempDir::new().unwrap();
+    let helper = external.path().join("helper.py");
+    fs::write(&helper, "VALUE = 1\n").unwrap();
+    let mut selector = TestSelector::new();
+    selector.index_files(std::slice::from_ref(&tests));
+
+    // Python imported VALUE = 1 and the test passed. Before the result reaches
+    // the cache, the source changes to code that would fail the next run.
+    fs::write(&helper, "VALUE = 2\n").unwrap();
+    record(
+        &mut selector,
+        &test,
+        vec![test.file.clone(), helper.clone()],
+    );
+    selector.index_files(std::slice::from_ref(&tests));
+    assert_eq!(
+        selector
+            .select_tests(std::slice::from_ref(&test))
+            .run_count(),
+        1
+    );
+
+    // Once the external file is indexed before execution, stable source can
+    // produce a reusable pass, including for tests sharing the import cache.
+    record(&mut selector, &test, vec![test.file.clone(), helper]);
+    selector.index_files(&[tests]);
+    assert_eq!(selector.select_tests(&[test]).skip_count(), 1);
 }

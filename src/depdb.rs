@@ -174,15 +174,12 @@ impl DependencyDatabase {
             }
             self.coverage_files.insert(path.clone());
             if !self.files.contains_key(&path) {
+                // Coverage is reported after execution. A newly discovered
+                // file may already differ from the code Python imported, so a
+                // post-run checksum cannot certify this result. Register the
+                // dependency and require a fresh pre-run snapshot next time.
                 self.snapshot_cache.take();
-                match fingerprint_file(&path) {
-                    Ok(checksum) => {
-                        self.files.insert(path, checksum);
-                    }
-                    Err(_) => {
-                        self.incomplete = true;
-                    }
-                }
+                self.incomplete = true;
             }
         }
         let snapshot = complete.then(|| self.snapshot()).flatten();
