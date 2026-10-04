@@ -365,8 +365,8 @@ fn rerun_preserves_explicit_default_async_concurrency_over_project_config() {
         &["--no-parallel", "--async-concurrency", "1"],
     ));
     let rerun_command = posix_rerun_command(&initial);
-    assert_contains(rerun_command, &["--no-parallel", "--async-concurrency 1"]);
-    // Without the explicit default, config overlap conflicts with --no-parallel.
+    assert_contains(rerun_command, &["--no-parallel", "--no-config"]);
+    // The rerun must not reload config overlap, which conflicts with --no-parallel.
     let rerun = failed_stdout(&run_posix(&project, rerun_command));
     assert_contains(&rerun, &["async override evidence", "0 passed, 1 failed"]);
 }
@@ -388,7 +388,7 @@ fn rerun_preserves_explicit_default_isolation_over_project_config() {
 
     let initial = failed_stdout(&run(&project, &["--isolation", "process-per-run"]));
     let rerun_command = posix_rerun_command(&initial);
-    assert_contains(rerun_command, &["--isolation process-per-run"]);
+    assert_contains(rerun_command, &["--no-config"]);
     let rerun = failed_stdout(&run_posix(&project, rerun_command));
     assert_contains(
         &rerun,

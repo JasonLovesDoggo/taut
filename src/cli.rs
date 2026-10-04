@@ -48,6 +48,9 @@ pub struct Options {
     /// Emit one machine-readable JSON document
     #[arg(long, global = true, help_heading = "Output")]
     pub json: bool,
+    /// Ignore [tool.taut] settings while preserving project discovery
+    #[arg(long, global = true, help_heading = "Execution")]
+    pub no_config: bool,
     /// Run tests sequentially
     #[arg(long, global = true, help_heading = "Execution")]
     pub no_parallel: bool,
@@ -270,7 +273,7 @@ fn print_empty_collection(paths: &[PathBuf], options: &Options, before_filter: u
 
 fn list_tests(paths: &[PathBuf], options: &Options) -> Result<i32> {
     validate_paths(paths)?;
-    config::Config::load(&selection_path(&paths[0]))?;
+    config::Config::load_project(&selection_path(&paths[0]), options.no_config)?;
     let Collection {
         tests,
         before_filter,
@@ -347,7 +350,7 @@ impl ExecutionSetup {
 /// One setup path for execution, watch validation, changed selection and doctor.
 fn execution_setup(paths: &[PathBuf], options: &Options) -> Result<ExecutionSetup> {
     validate_paths(paths)?;
-    let project = config::Config::load_project(&selection_path(&paths[0]))?;
+    let project = config::Config::load_project(&selection_path(&paths[0]), options.no_config)?;
     let mut runtime = runner_options(options, project.options)?;
     let explicit = runtime.python.take().map(|path| {
         let source = if options.python.is_some() {
@@ -389,7 +392,7 @@ fn doctor(path: &Path, options: &Options) -> Result<i32> {
             "{}",
             serde_json::json!({
                 "schema_version": 1,
-                "project": {"root": setup.project_root, "config_path": setup.config_path},
+                "project": {"root": setup.project_root, "config_path": setup.config_path, "config_ignored": options.no_config},
                 "python": {"path": setup.python.path, "source": setup.python.source, "version": version},
                 "execution": execution,
             })
@@ -397,12 +400,17 @@ fn doctor(path: &Path, options: &Options) -> Result<i32> {
     } else {
         println!("Project: {}", setup.project_root.display());
         println!(
-            "Configuration: {}",
+            "Configuration: {}{}",
             setup
                 .config_path
                 .as_ref()
                 .map(|path| path.display().to_string())
-                .unwrap_or_else(|| "none (defaults)".to_owned())
+                .unwrap_or_else(|| "none (defaults)".to_owned()),
+            if options.no_config && setup.config_path.is_some() {
+                " (ignored by --no-config)"
+            } else {
+                ""
+            }
         );
         println!("Python: {}", setup.python.path.display());
         println!("Python source: {}", setup.python.source.label());
@@ -548,8 +556,13 @@ fn execute(paths: &[PathBuf], options: &Options) -> Result<i32> {
                 quiet: options.quiet,
                 verbose: options.verbose,
                 runtime: Some(&runtime),
-                explicit_isolation: options.isolation.is_some(),
-                explicit_async_concurrency: options.async_concurrency.is_some(),
+                // Launcher-provided interpreters may be temporary (uv --with).
+                // Repeating the same launcher context must select its new path.
+                rerun_python: (!matches!(
+                    setup.python.source,
+                    crate::python::Source::VirtualEnv | crate::python::Source::TautPython
+                ))
+                .then_some(setup.python.path.as_path()),
             },
         );
     }
@@ -694,6 +707,7 @@ mod tests {
             "python3.13",
             "--async-concurrency",
             "8",
+            "--no-config",
             "-x",
             "-j",
             "2",
@@ -702,6 +716,7 @@ mod tests {
         assert_eq!(args.options.jobs, Some(2));
         assert_eq!(args.options.async_concurrency, Some(8));
         assert!(args.options.fail_fast);
+        assert!(args.options.no_config);
     }
 
     #[test]

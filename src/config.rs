@@ -28,17 +28,20 @@ pub(crate) struct ProjectConfig {
 impl Config {
     /// Load configuration from the nearest project boundary.
     pub fn load(start: &Path) -> Result<Self> {
-        Ok(Self::load_project(start)?.options)
+        Ok(Self::load_project(start, false)?.options)
     }
 
-    pub(crate) fn load_project(start: &Path) -> Result<ProjectConfig> {
+    pub(crate) fn load_project(start: &Path, ignore_settings: bool) -> Result<ProjectConfig> {
         let start = start
             .canonicalize()
             .with_context(|| format!("cannot access {}", start.display()))?;
         let root = crate::project::root(&start);
         let path = root.join("pyproject.toml");
-        let (options, path) = if path.exists() {
-            let content = std::fs::read_to_string(&path)
+        let path = path.exists().then_some(path);
+        // Project boundaries and environment discovery still use the file as a
+        // marker when --no-config skips settings, including malformed TOML.
+        let options = if let Some(path) = path.as_ref().filter(|_| !ignore_settings) {
+            let content = std::fs::read_to_string(path)
                 .with_context(|| format!("cannot read {}", path.display()))?;
             let mut config = Self::parse(&content)
                 .with_context(|| format!("invalid configuration in {}", path.display()))?;
@@ -48,9 +51,9 @@ impl Config {
             {
                 config.python = Some(root.join(python));
             }
-            (config, Some(path))
+            config
         } else {
-            (Self::default(), None)
+            Self::default()
         };
         Ok(ProjectConfig {
             root,

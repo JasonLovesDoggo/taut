@@ -69,9 +69,8 @@ pub struct SummaryOptions<'a> {
     pub quiet: bool,
     pub verbose: bool,
     pub runtime: Option<&'a RunOptions>,
-    // Explicit default values can override nondefault project configuration.
-    pub explicit_isolation: bool,
-    pub explicit_async_concurrency: bool,
+    /// Stable interpreter selection; launcher-managed environments are reselected.
+    pub rerun_python: Option<&'a Path>,
 }
 
 #[derive(Clone, Copy)]
@@ -141,27 +140,21 @@ fn rerun_arguments(result: &TestResult, options: &SummaryOptions<'_>) -> Vec<Str
         .and_then(|cwd| executable.strip_prefix(cwd).ok().map(PathBuf::from))
         .map(|relative| PathBuf::from(".").join(relative))
         .unwrap_or(executable);
-    let mut arguments = vec![executable.to_string_lossy().into_owned()];
+    let mut arguments = vec![
+        executable.to_string_lossy().into_owned(),
+        "--no-config".to_owned(),
+    ];
+    if let Some(python) = options.rerun_python {
+        arguments.extend(["--python".to_owned(), python.to_string_lossy().into_owned()]);
+    }
     if let Some(runtime) = options.runtime {
-        let python = runtime.python_path();
-        // A plain default executable uses the same PATH as the original run.
-        // Preserve venv, environment-variable, config and explicit selections.
-        if runtime.python.is_some()
-            || python != Path::new(if cfg!(windows) { "python" } else { "python3" })
-        {
-            arguments.extend(["--python".to_owned(), python.to_string_lossy().into_owned()]);
-        }
         if !runtime.parallel {
             arguments.push("--no-parallel".to_owned());
         }
-        if options.explicit_isolation || runtime.isolation != IsolationMode::ProcessPerRun {
-            let isolation = match runtime.isolation {
-                IsolationMode::ProcessPerRun => "process-per-run",
-                IsolationMode::ProcessPerTest => "process-per-test",
-            };
-            arguments.extend(["--isolation".to_owned(), isolation.to_owned()]);
+        if runtime.isolation != IsolationMode::ProcessPerRun {
+            arguments.extend(["--isolation".to_owned(), "process-per-test".to_owned()]);
         }
-        if options.explicit_async_concurrency || runtime.async_concurrency != 1 {
+        if runtime.async_concurrency != 1 {
             arguments.extend([
                 "--async-concurrency".to_owned(),
                 runtime.async_concurrency.to_string(),
@@ -245,10 +238,8 @@ pub fn print_run_summary_with_options(
     }
     let passed = results.passed_count();
     let failed = results.failed_count();
-    if failed > 0 {
-        println!(
-            "\nReruns select one case in the same directory and environment; suite interactions and dependency tracing may differ."
-        );
+    if failed > 0 && options.runtime.is_some() && options.rerun_python.is_none() {
+        println!("Keep the same uv run prefix or activated environment when rerunning.");
     }
     let skipped = results.skipped_count();
     let not_run = collected.saturating_sub(results.results.len() + unchanged);
@@ -378,12 +369,14 @@ mod tests {
             &result,
             &SummaryOptions {
                 runtime: Some(&runtime),
+                rerun_python: runtime.python.as_deref(),
                 ..SummaryOptions::default()
             },
         );
         assert_eq!(
             &arguments[1..],
             [
+                "--no-config",
                 "--python",
                 ".venv with spaces/bin/python",
                 "--no-parallel",
@@ -404,12 +397,14 @@ mod tests {
             &result,
             &SummaryOptions {
                 runtime: Some(&concurrent),
+                rerun_python: concurrent.python.as_deref(),
                 ..SummaryOptions::default()
             },
         );
         assert_eq!(
             &arguments[1..],
             [
+                "--no-config",
                 "--python",
                 "python3",
                 "--async-concurrency",
