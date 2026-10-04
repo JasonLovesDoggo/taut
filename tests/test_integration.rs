@@ -147,19 +147,17 @@ fn incremental_run_skips_unchanged_tests() -> Result<()> {
     )?;
 
     // First run - both tests should run
-    let result1 = run_taut(&project, &["."])?;
+    let result1 = run_taut(&project, &["--changed", "."])?;
     result1.assert_success();
 
     // Second run - tests should be skipped (cached)
-    let result2 = run_taut(&project, &["."])?;
+    let result2 = run_taut(&project, &["--changed", "."])?;
     result2.assert_success();
 
     // Should show "skipped" or "s" for cached tests
     // (or "unchanged" depending on implementation)
     assert!(
-        result2.stdout.contains("skipped")
-            || result2.stdout.contains("s")
-            || result2.stdout.contains("unchanged"),
+        result2.stdout.contains("2 unchanged"),
         "Second run should skip unchanged tests: {}",
         result2.stdout
     );
@@ -185,7 +183,7 @@ fn incremental_run_reruns_changed_tests() -> Result<()> {
     )?;
 
     // First run
-    let result1 = run_taut(&project, &["."])?;
+    let result1 = run_taut(&project, &["--changed", "."])?;
     result1.assert_success();
 
     // Modify the helper
@@ -209,7 +207,7 @@ fn incremental_run_reruns_changed_tests() -> Result<()> {
     }
 
     // Second run - should re-run and fail
-    let result2 = run_taut(&project, &["."])?;
+    let result2 = run_taut(&project, &["--changed", "."])?;
     result2.assert_failure();
 
     Ok(())
@@ -222,14 +220,14 @@ fn incremental_run_reruns_failed_tests() -> Result<()> {
     project.write_file("test_retry.py", "def test_fail(): assert False\n")?;
 
     // First run - fails
-    let result1 = run_taut(&project, &["."])?;
+    let result1 = run_taut(&project, &["--changed", "."])?;
     result1.assert_failure();
 
     // Fix the test
     project.write_file("test_retry.py", "def test_fail(): assert True\n")?;
 
     // Second run - should re-run (was failing) and pass
-    let result2 = run_taut(&project, &["."])?;
+    let result2 = run_taut(&project, &["--changed", "."])?;
     result2.assert_success();
 
     Ok(())
@@ -606,11 +604,10 @@ fn async_tests_run_correctly() -> Result<()> {
     result.assert_success();
 
     // Both tests should pass
-    // BUG: Async functions are not discovered properly (AsyncFunctionDef not handled)
-    // so currently only 1 test is found. When fixed, this should be "2 passed"
+    // Both async and sync functions must be collected and executed.
     assert!(
         result.stdout.contains("2 passed"),
-        "BUG: Both async and sync tests should pass. Only found 1 test due to async discovery bug. stdout: {}",
+        "Both async and sync tests should pass. stdout: {}",
         result.stdout
     );
 
