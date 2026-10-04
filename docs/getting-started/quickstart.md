@@ -82,7 +82,7 @@ Failure reports show the failing test and a command to rerun it. Run that comman
 
 ## Try it in CI
 
-Add a separate trial job while keeping your current test job. This example assumes a checked-in, current `uv.lock` and uses the immutable preview commit `817a08d8776a46dfff880980984f0665c5f56dda`, including environment diagnostics and exact failure reruns. Replace the pin only after reviewing a newer commit; there is no published release with this feature set yet.
+Add a separate trial job while keeping your current test job. This example assumes a checked-in, current `uv.lock` and uses the immutable preview commit `77cd681acffcbd0d8e88d704d4d44f8aae5fa5d7`, including environment diagnostics and exact failure reruns. Replace the pin only after reviewing a newer commit; there is no published release with this feature set yet.
 
 ```yaml
 name: Taut trial
@@ -100,7 +100,7 @@ jobs:
       - name: Run the trial directory
         run: >-
           uv run --locked
-          --with "taut @ git+https://github.com/JasonLovesDoggo/taut@817a08d8776a46dfff880980984f0665c5f56dda"
+          --with "taut @ git+https://github.com/JasonLovesDoggo/taut@77cd681acffcbd0d8e88d704d4d44f8aae5fa5d7"
           taut tests/unit --json > taut-results.json
       - uses: actions/upload-artifact@v4
         if: always()
