@@ -354,3 +354,63 @@ fn missing_interpreter_is_infrastructure_error() {
         .expect("missing interpreter must return Err");
     assert!(error.to_string().contains("Could not launch Python"));
 }
+
+#[test]
+fn handled_task_exceptions_are_not_reported_as_failures() {
+    let (_dir, file) = suite(
+        "import asyncio\nasync def failure(): raise ValueError('expected')\nasync def test_caught():\n try: await asyncio.create_task(failure())\n except ValueError: pass\nasync def test_gather():\n values=await asyncio.gather(failure(), return_exceptions=True)\n assert isinstance(values[0], ValueError)\n",
+    );
+    let options = RunOptions {
+        async_concurrency: 2,
+        ..options()
+    };
+    let results = run_tests_with_options(
+        &[item(&file, "test_caught"), item(&file, "test_gather")],
+        &options,
+        |_| {},
+    )
+    .unwrap();
+    assert!(results.all_passed(), "{:?}", results.results);
+}
+
+#[test]
+fn callback_and_explicit_context_task_errors_cannot_false_pass() {
+    let (_dir, file) = suite(
+        "import asyncio, contextvars\ndef callback(): raise AssertionError('callback failure')\nasync def failure(): raise ValueError('background failure')\nasync def test_callback(): asyncio.get_running_loop().call_soon(callback)\nasync def test_context():\n asyncio.create_task(failure(), context=contextvars.Context())\n await asyncio.sleep(0)\n",
+    );
+    let results = run_tests_with_options(
+        &[item(&file, "test_callback"), item(&file, "test_context")],
+        &options(),
+        |_| {},
+    )
+    .unwrap();
+    assert_eq!(results.failed_count(), 2, "{:?}", results.results);
+}
+
+#[test]
+fn test_stdin_cannot_consume_protocol_requests() {
+    let (_dir, file) = suite(
+        "import os, sys\ndef test_stdin():\n assert sys.stdin.read() == ''\n assert os.read(0, 4) == b''\ndef test_next(): pass\n",
+    );
+    let results = run_tests_with_options(
+        &[item(&file, "test_stdin"), item(&file, "test_next")],
+        &options(),
+        |_| {},
+    )
+    .unwrap();
+    assert!(results.all_passed(), "{:?}", results.results);
+}
+
+#[test]
+fn timers_are_cancelled_after_their_test_finishes() {
+    let (_dir, file) = suite(
+        "import asyncio\nchanged=False\ndef callback():\n global changed\n changed=True\nasync def test_timer(): asyncio.get_running_loop().call_later(0.03,callback)\nasync def test_next():\n await asyncio.sleep(0.05)\n assert not changed\n",
+    );
+    let results = run_tests_with_options(
+        &[item(&file, "test_timer"), item(&file, "test_next")],
+        &options(),
+        |_| {},
+    )
+    .unwrap();
+    assert!(results.all_passed(), "{:?}", results.results);
+}

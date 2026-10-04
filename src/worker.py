@@ -13,6 +13,10 @@ import types
 
 _MAX_OUTPUT = 1024 * 1024
 _protocol = os.fdopen(os.dup(1), "wb", buffering=0)
+_input = os.fdopen(os.dup(0), "rb")
+with open(os.devnull, "rb") as _null:
+    os.dup2(_null.fileno(), 0)
+sys.stdin = io.TextIOWrapper(os.fdopen(os.dup(0), "rb"))
 # dup() descriptors are non-inheritable: child processes cannot keep our protocol open.
 _native = [tempfile.TemporaryFile(), tempfile.TemporaryFile()]
 _native_offsets = [0, 0]
@@ -24,6 +28,7 @@ _modules = {}
 _loop = None
 _asyncio = None
 _single_owner = None
+_running_cases = set()
 
 
 class Capture(io.StringIO):
@@ -107,7 +112,7 @@ def _send(value):
 
 
 def _read():
-    header = sys.stdin.buffer.read(4)
+    header = _input.read(4)
     if not header:
         return None
     if len(header) != 4:
@@ -115,7 +120,7 @@ def _read():
     length = struct.unpack("<I", header)[0]
     if length > 64 * 1024 * 1024:
         raise ValueError("Request exceeds 64 MiB")
-    data = sys.stdin.buffer.read(length)
+    data = _input.read(length)
     if len(data) != length:
         raise EOFError("Incomplete request")
     return json.loads(data)
@@ -260,13 +265,29 @@ def _ensure_loop():
         _loop = asyncio.new_event_loop()
 
         def factory(loop, coro, **kwargs):
-            task = asyncio.Task(coro, loop=loop, **kwargs)
             context = kwargs.get("context")
-            owner = context.get(_owner) if context is not None else _owner.get()
+            owner = (context.get(_owner) if context is not None else None) or _owner.get()
+            if context is not None and owner is not None:
+                context = context.copy()
+                context.run(_owner.set, owner)
+                context.run(_capture.set, owner.buffers)
+                kwargs["context"] = context
+            task = asyncio.Task(coro, loop=loop, **kwargs)
             if owner is not None:
                 owner.tasks.add(task)
             return task
 
+        def handle_error(loop, context):
+            error = context.get("exception") or RuntimeError(context.get("message", "Unhandled event loop error"))
+            owner = _owner.get()
+            targets = [owner] if owner is not None else list(_running_cases)
+            if targets:
+                for case in targets:
+                    case.record(error, "event loop callback" if owner is not None else "unattributed event loop callback")
+            else:
+                loop.default_exception_handler(context)
+
+        _loop.set_exception_handler(handle_error)
         _loop.set_task_factory(factory)
     return _loop
 
@@ -280,19 +301,30 @@ async def _call_async(function):
 
 async def _cleanup_tasks(case):
     current = _asyncio.current_task()
-    # Descendants may create descendants during cancellation, so keep draining.
+    # Give call_soon callbacks one turn so assertions cannot disappear after a pass.
+    await _asyncio.sleep(0)
     while True:
         tasks = [task for task in case.tasks if task is not current]
         case.tasks.difference_update(tasks)
         if not tasks:
-            return
+            break
+        # asyncio clears _log_traceback when the test has retrieved an exception.
+        # Re-failing intentionally caught task exceptions would be a false failure.
+        report = {task for task in tasks if not task.done() or getattr(task, "_log_traceback", False)}
         for task in tasks:
             if not task.done():
                 task.cancel()
         values = await _asyncio.gather(*tasks, return_exceptions=True)
-        for value in values:
-            if isinstance(value, BaseException) and not isinstance(value, _asyncio.CancelledError):
+        for task, value in zip(tasks, values):
+            if task in report and isinstance(value, BaseException) and not isinstance(value, _asyncio.CancelledError):
                 case.record(value, "background task")
+    # Timer callbacks retain a test's context even after its coroutine returns.
+    # Cancel owned timers so they cannot mutate state during a subsequent test.
+    loop = _asyncio.get_running_loop()
+    for handle in getattr(loop, "_scheduled", ()):
+        context = getattr(handle, "_context", None)
+        if context is not None and context.get(_owner) is case:
+            handle.cancel()
 
 
 async def _async_lifecycle(case):
@@ -333,6 +365,7 @@ async def _async_case(case, timeout, shared):
     case.start = time.perf_counter()
     token = _capture.set(case.buffers)
     owner = _owner.set(case)
+    _running_cases.add(case)
     try:
         if timeout is None:
             await _async_lifecycle(case)
@@ -344,6 +377,7 @@ async def _async_case(case, timeout, shared):
         _owner.reset(owner)
         _capture.reset(token)
         _send(case.result(shared))
+        _running_cases.discard(case)
 
 
 def _call_sync(function, case):
@@ -352,7 +386,11 @@ def _call_sync(function, case):
         loop = _ensure_loop()
         async def await_value():
             return _check_return(await value)
-        return loop.run_until_complete(await_value())
+        task = _asyncio.ensure_future(await_value(), loop=loop)
+        try:
+            return loop.run_until_complete(task)
+        finally:
+            case.tasks.discard(task)
     return value
 
 
