@@ -28,10 +28,25 @@ impl TestItem {
     /// Returns a unique identifier for this test (e.g., "tests/test_example.py::TestMath::test_add")
     pub fn id(&self) -> String {
         let file = self.file.display();
-        match &self.class {
+        let mut id = match &self.class {
             Some(class) => format!("{}::{}::{}", file, class, self.function),
             None => format!("{}::{}", file, self.function),
+        };
+        if let Some(case) = crate::parametrize::case_id(self) {
+            id.push_str(&format!("[{case}]"));
         }
+        id
+    }
+
+    /// Keyword arguments for one statically collected parameter case.
+    pub fn parameters(&self) -> Option<serde_json::Value> {
+        crate::parametrize::parameters(self)
+    }
+
+    fn matches_function(&self, selector: &str) -> bool {
+        self.function == selector
+            || crate::parametrize::case_id(self)
+                .is_some_and(|case| selector == format!("{}[{case}]", self.function))
     }
 
     /// Check if this test has the @skip marker.
@@ -220,23 +235,36 @@ fn make_item(
     path: &Path,
     stmt: &ast::Stmt,
     class: Option<&str>,
-    inherited: &[Marker],
+    inherited: &[ast::Expr],
     lines: &LineIndex,
-) -> Option<TestItem> {
-    let (name, offset, decorators) = test_function(stmt)?;
+    items: &mut Vec<TestItem>,
+) -> Result<bool> {
+    let Some((name, offset, decorators)) = test_function(stmt) else {
+        return Ok(false);
+    };
     let mut markers = markers::extract_markers(decorators);
-    for marker in inherited {
+    for marker in markers::extract_class_markers(inherited) {
         if !markers.iter().any(|existing| existing.name == marker.name) {
-            markers.push(marker.clone());
+            markers.push(marker);
         }
     }
-    Some(TestItem {
+    let item = TestItem {
         file: path.to_path_buf(),
         function: name.to_owned(),
         class: class.map(str::to_owned),
         line: lines.line(offset),
         markers,
-    })
+    };
+    crate::parametrize::expand_into(item, inherited.iter().chain(decorators), items).with_context(
+        || {
+            format!(
+                "Cannot parametrize {}:{} ({name})",
+                path.display(),
+                lines.line(offset)
+            )
+        },
+    )?;
+    Ok(true)
 }
 
 // Static collection cannot decide which runtime branch defines a test. Report
@@ -338,8 +366,8 @@ pub fn extract_tests_from_file(path: &Path) -> Result<Vec<TestItem>> {
         .then(|| classes::Classes::new(&suite));
     let mut items = Vec::new();
     for stmt in &suite {
-        if let Some(item) = make_item(path, stmt, None, &[], &lines) {
-            items.push(item);
+        if make_item(path, stmt, None, &[], &lines, &mut items)? {
+            continue;
         } else if let ast::Stmt::ClassDef(class) = stmt {
             if let Some(classes) = &classes {
                 items.extend(classes.collect(class, path, &lines)?);
@@ -407,8 +435,8 @@ impl NodeSelector {
             [name] => item
                 .class
                 .as_ref()
-                .map_or_else(|| item.function == *name, |class| class == name),
-            [class, method] => item.class.as_ref() == Some(class) && item.function == *method,
+                .map_or_else(|| item.matches_function(name), |class| class == name),
+            [class, method] => item.class.as_ref() == Some(class) && item.matches_function(method),
             _ => false,
         }
     }

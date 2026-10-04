@@ -1,7 +1,7 @@
 //! Import-free class collection. Resolve local bases and the standard unittest
 //! roots, then use Python's C3 ordering and class attribute shadowing rules.
 use super::{LineIndex, TestItem, is_test_name, markers, reject_compound_tests};
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use rustpython_parser::ast;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -310,8 +310,12 @@ impl<'a> Classes<'a> {
             Err(error) => return Err(self.collection_error(class, path, lines, error)),
         };
         let mut class_markers = Vec::new();
+        // Borrow decorator ASTs in MRO order. Parameter expansion applies them
+        // after method decorators, including parameters inherited from bases.
+        let mut class_decorators = Vec::new();
         for key in mro {
             if let ClassKey::Local(index) = key {
+                class_decorators.extend(&self.classes[*index].node.decorator_list);
                 for marker in
                     markers::extract_class_markers(&self.classes[*index].node.decorator_list)
                 {
@@ -396,9 +400,22 @@ impl<'a> Classes<'a> {
                     markers,
                 };
                 if fallback {
-                    run_test = Some(item);
+                    run_test = Some((item, decorators));
                 } else {
-                    items.push(item);
+                    crate::parametrize::expand_into(
+                        item,
+                        class_decorators.iter().copied().chain(decorators),
+                        &mut items,
+                    )
+                    .with_context(|| {
+                        format!(
+                            "Cannot parametrize {}:{} ({}::{})",
+                            path.display(),
+                            lines.line(offset),
+                            name,
+                            binding.name,
+                        )
+                    })?;
                 }
             }
         }
@@ -410,8 +427,19 @@ impl<'a> Classes<'a> {
                     name
                 );
             }
-            if let Some(run_test) = run_test {
-                items.push(run_test);
+            if let Some((run_test, decorators)) = run_test {
+                let line = run_test.line;
+                crate::parametrize::expand_into(
+                    run_test,
+                    class_decorators.iter().copied().chain(decorators),
+                    &mut items,
+                )
+                .with_context(|| {
+                    format!(
+                        "Cannot parametrize {}:{line} ({name}::runTest)",
+                        path.display(),
+                    )
+                })?;
             }
         }
         Ok(items)

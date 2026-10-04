@@ -7,6 +7,7 @@ pub mod discovery;
 pub mod filter;
 pub mod markers;
 pub mod output;
+pub mod parametrize;
 pub mod runner;
 pub mod selection;
 pub mod worker_pool;
