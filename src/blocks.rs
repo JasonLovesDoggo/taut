@@ -158,8 +158,7 @@ impl FileBlocks {
             }
         };
 
-        for i in 1..top_level_ranges.len() {
-            let (start, end) = top_level_ranges[i];
+        for &(start, end) in top_level_ranges.iter().skip(1) {
             if start <= current_end + 2 {
                 current_end = end;
             } else {
