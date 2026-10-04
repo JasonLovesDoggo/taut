@@ -11,9 +11,9 @@ And the CLI entry point:
 - main() - Run the taut CLI
 """
 
-from typing import Any, Callable, Optional, TypeVar, Union
+from __future__ import annotations
 
-F = TypeVar("F", bound=Callable[..., Any])
+from collections.abc import Callable
 
 
 # =============================================================================
@@ -21,7 +21,9 @@ F = TypeVar("F", bound=Callable[..., Any])
 # =============================================================================
 
 
-def skip(arg: Union[F, str, None] = None, *, reason: Optional[str] = None) -> Any:
+def skip[F: Callable](
+    arg: F | str | None = None, *, reason: str | None = None
+) -> F | Callable[[F], F]:
     """
     Decorator to skip a test.
 
@@ -59,7 +61,7 @@ def skip(arg: Union[F, str, None] = None, *, reason: Optional[str] = None) -> An
 # =============================================================================
 
 
-def mark(**kwargs: Any) -> Callable[[F], F]:
+def mark[F: Callable](**kwargs: object) -> Callable[[F], F]:
     """
     Decorator to add metadata markers to a test.
 
@@ -95,7 +97,7 @@ def mark(**kwargs: Any) -> Callable[[F], F]:
 # =============================================================================
 
 
-def parallel(func: Optional[F] = None) -> Any:
+def parallel[F: Callable](func: F | None = None) -> F | Callable[[F], F]:
     """
     Decorator to mark a test as safe to run in parallel with other parallel tests.
 
@@ -132,10 +134,14 @@ def parallel(func: Optional[F] = None) -> Any:
 
 
 # =============================================================================
-# CLI Entry Point (from Rust)
+# CLI entry point
 # =============================================================================
 
-from taut._taut import main
+def main() -> int:
+    """Run the installed native CLI using this Python interpreter for tests."""
+    from .__main__ import main as run
+
+    return run()
 
 # =============================================================================
 # Exports
