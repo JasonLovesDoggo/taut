@@ -268,14 +268,70 @@ fn runner_options(options: &Options, config: config::Config) -> Result<runner::R
     })
 }
 
-fn execution_context(options: &runner::RunOptions) -> String {
-    let python = crate::worker_pool::resolve_python(options.python.as_deref());
-    let canonical = python.canonicalize().ok();
-    let metadata = std::fs::metadata(&python)
-        .ok()
-        .map(|metadata| (metadata.len(), metadata.modified().ok()));
+/// Resolve PATH without canonicalizing away a virtual environment's interpreter symlink.
+fn resolve_executable(python: &Path) -> Option<PathBuf> {
+    if python.components().count() != 1 {
+        return is_executable(python).then(|| python.to_path_buf());
+    }
+    std::env::var_os("PATH").and_then(|paths| {
+        std::env::split_paths(&paths).find_map(|directory| {
+            let candidate = directory.join(python);
+            if is_executable(&candidate) {
+                return Some(candidate);
+            }
+            #[cfg(windows)]
+            if candidate.extension().is_none() {
+                let executable = candidate.with_extension("exe");
+                if is_executable(&executable) {
+                    return Some(executable);
+                }
+            }
+            None
+        })
+    })
+}
+
+fn is_executable(path: &Path) -> bool {
+    let Ok(metadata) = path.metadata() else {
+        return false;
+    };
+    if !metadata.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
+fn execution_context(options: &runner::RunOptions, python: Option<&Path>) -> String {
+    let fingerprint = python
+        .and_then(|python| {
+            let canonical = python.canonicalize().ok()?;
+            let metadata = canonical.metadata().ok()?;
+            let modified = metadata.modified().ok()?;
+            Some(format!(
+                "lexical={python:?};canonical={canonical:?};size={};modified={modified:?}",
+                metadata.len()
+            ))
+        })
+        .unwrap_or_else(|| {
+            // Never certify cached success when the interpreter cannot be inspected.
+            static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            format!(
+                "unavailable:{:?}:{}:{}",
+                std::time::SystemTime::now(),
+                std::process::id(),
+                SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            )
+        });
     format!(
-        "python={python:?};canonical={canonical:?};metadata={metadata:?};isolation={:?};parallel={};jobs={:?};async={};timeout={:?};fail_fast={}",
+        "python={fingerprint};isolation={:?};parallel={};jobs={:?};async={};timeout={:?};fail_fast={}",
         options.isolation,
         options.parallel,
         options.jobs,
@@ -288,7 +344,7 @@ fn execution_context(options: &runner::RunOptions) -> String {
 fn execute(paths: &[PathBuf], options: &Options) -> Result<i32> {
     let started = Instant::now();
     validate_paths(paths)?;
-    let runtime = runner_options(options, config::Config::load(&selection_path(&paths[0]))?)?;
+    let mut runtime = runner_options(options, config::Config::load(&selection_path(&paths[0]))?)?;
     let all_tests = collect(paths, options)?;
     if all_tests.is_empty() {
         if options.json {
@@ -309,7 +365,14 @@ fn execute(paths: &[PathBuf], options: &Options) -> Result<i32> {
     // Normal runs never instantiate the selector or parse unrelated source files.
     let mut selector = options.changed.then(selection::TestSelector::new);
     if let Some(selector) = &mut selector {
-        selector.set_execution_context(&execution_context(&runtime));
+        let selected = crate::worker_pool::resolve_python(runtime.python.as_deref());
+        let python = resolve_executable(&selected);
+        if let Some(python) = &python {
+            selector.set_python_environment(python);
+            // Execute the same lexical path whose environment and metadata we inspected.
+            runtime.python = Some(python.clone());
+        }
+        selector.set_execution_context(&execution_context(&runtime, python.as_deref()));
     }
     let mut selected_out = Vec::new();
     let mut skipped = Vec::new();
