@@ -41,7 +41,7 @@ async def test_async_result():
     assert await calculate() == 42
 ```
 
-No decorator or plugin is needed. Each worker reuses an event loop. By default, async tests run one at a time in each worker while different processes can run in parallel.
+No decorator or plugin is needed. Ordinary async tests reuse an event loop in each worker. By default, async tests run one at a time in each worker while different processes can run in parallel.
 
 `--async-concurrency N` opts into overlapping async tests on the same loop. This helps when independent tests spend time awaiting I/O. It does not accelerate a CPU loop or a blocking `time.sleep()` inside async code; those block the worker. Move blocking operations to `asyncio.to_thread()` when that fits the code under test, or use additional worker processes.
 
@@ -203,7 +203,7 @@ Dynamic expressions, generated case lists, indirect parametrization, and empty c
 
 ## Classes and lifecycle hooks
 
-Group methods in a class whose name begins with `Test`. A new instance is created for each test. Plain test classes can use `setUp`/`tearDown` and `asyncSetUp`/`asyncTearDown`; cleanup follows successful setup stages.
+Group methods in a class whose name begins with `Test`. A new instance is created for each test; cleanup follows successful setup stages.
 
 ```python
 class TestCounter:
@@ -228,6 +228,19 @@ class ArithmeticCase(unittest.TestCase):
     def test_sum(self):
         self.assertEqual(1 + 2, 3)
 ```
+
+Per-test lifecycle support is explicit:
+
+| Test kind | Supported lifecycle |
+| --- | --- |
+| Functions | `setup_function` / `teardown_function` |
+| Plain test classes | `setup_method` / `teardown_method`, `setUp` / `tearDown`, and `asyncSetUp` / `asyncTearDown` |
+| `unittest.TestCase` | `TestCase.run`, including `subTest` and registered `addCleanup` callbacks |
+| `unittest.IsolatedAsyncioTestCase` | Its own per-test loop, async setup/teardown, and `addAsyncCleanup`; async fixtures use that same loop |
+
+Unittest cases run individually within each worker rather than overlapping through `--async-concurrency`. An async test method on a plain `unittest.TestCase` is an error; use `IsolatedAsyncioTestCase` or an ordinary async test.
+
+Module- and class-wide lifecycle hooks are not supported. Taut rejects `setup_module` / `teardown_module`, `setup_class` / `teardown_class`, and custom `setUpClass` / `tearDownClass` hooks. Use function-scoped fixtures for resource setup and cleanup.
 
 Other imported or dynamically constructed base classes cannot be resolved without importing them, so collection rejects them. Define test classes and functions directly in the module instead of inside conditional statements.
 
