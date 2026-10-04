@@ -10,7 +10,8 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 use xxhash_rust::xxh64::Xxh64;
 
-const DEPDB_FILE: &str = "depdb-v2.json";
+// v2 discarded import aliases, so its successful results cannot be reused.
+const DEPDB_FILE: &str = "depdb-v3.json";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct TestId {
@@ -74,6 +75,9 @@ pub struct DependencyDatabase {
     file_aliases: RefCell<HashMap<PathBuf, PathBuf>>,
     #[serde(skip)]
     observations: HashMap<PathBuf, Option<FileObservation>>,
+    /// Bind lexical import names to their targets in the pre-run snapshot.
+    #[serde(skip)]
+    coverage_targets: BTreeMap<PathBuf, PathBuf>,
 }
 
 impl DependencyDatabase {
@@ -127,6 +131,13 @@ impl DependencyDatabase {
     }
 
     fn observation_unchanged(&self, path: &Path) -> bool {
+        if self
+            .coverage_targets
+            .get(path)
+            .is_some_and(|target| canonical_path(path) != *target)
+        {
+            return false;
+        }
         self.observations.get(path).is_some_and(|before| {
             FileObservation::read(path).is_ok_and(|current| &current == before)
         })
@@ -159,6 +170,11 @@ impl DependencyDatabase {
         self.files = files;
         self.blocks.clear();
         self.incomplete = incomplete;
+        self.coverage_targets = self
+            .coverage_files
+            .iter()
+            .map(|path| (path.clone(), canonical_path(path)))
+            .collect();
         self.observations.clear();
         for path in self.files.keys().cloned().collect::<Vec<_>>() {
             self.observe(&path);
@@ -218,6 +234,19 @@ impl DependencyDatabase {
             hash.update(&(checksum.len() as u64).to_le_bytes());
             hash.update(checksum.as_bytes());
         }
+        // Identical bytes can still behave differently through __file__ or a
+        // resolved relative path. Include alias targets, including same-byte
+        // retargets and swaps where the set of target files stays unchanged.
+        hash.update(b"\0import-resolutions\0");
+        for (path, target) in &self.coverage_targets {
+            if path != target {
+                for value in [path, target] {
+                    let bytes = value.as_os_str().as_encoded_bytes();
+                    hash.update(&(bytes.len() as u64).to_le_bytes());
+                    hash.update(bytes);
+                }
+            }
+        }
         Some(format!("{:016x}", hash.digest()))
     }
 
@@ -233,8 +262,16 @@ impl DependencyDatabase {
         let id = TestId::from(test);
         let mut complete = false;
         for (path, lines) in coverage {
-            let path = canonical_path(path);
-            if path == id.file && !lines.is_empty() {
+            // Preserve the import name Python actually executed. Canonicalizing
+            // this before persistence would forget which symlink to refresh.
+            let path = if path == &test.file {
+                // The worker loads the selected test module by canonical path;
+                // keep direct API callers using that same test-file identity.
+                id.file.clone()
+            } else {
+                absolute_path(path)
+            };
+            if canonical_path(&path) == id.file && !lines.is_empty() {
                 complete = true;
             }
             self.coverage_files.insert(path.clone());
@@ -312,14 +349,16 @@ impl FileObservation {
     }
 }
 
+fn absolute_path(path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir().unwrap_or_default().join(path)
+    }
+}
+
 pub(crate) fn canonical_path(path: &Path) -> PathBuf {
-    path.canonicalize().unwrap_or_else(|_| {
-        if path.is_absolute() {
-            path.to_path_buf()
-        } else {
-            std::env::current_dir().unwrap_or_default().join(path)
-        }
-    })
+    path.canonicalize().unwrap_or_else(|_| absolute_path(path))
 }
 
 pub(crate) fn fingerprint_file(path: &Path) -> std::io::Result<String> {
