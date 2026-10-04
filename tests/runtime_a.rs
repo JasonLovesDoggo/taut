@@ -414,3 +414,58 @@ fn timers_are_cancelled_after_their_test_finishes() {
     .unwrap();
     assert!(results.all_passed(), "{:?}", results.results);
 }
+
+#[test]
+fn cancellation_resistant_task_fails_and_recycles_without_rerunning_started_test() {
+    let (dir, file) = suite(
+        "import asyncio, pathlib\nasync def stubborn():\n while True:\n  try: await asyncio.sleep(50)\n  except asyncio.CancelledError: pass\nasync def test_leak():\n with open(__file__+'.witness', 'a') as f: f.write('once')\n asyncio.create_task(stubborn())\n await asyncio.sleep(0)\ndef test_next(): pass\n",
+    );
+    let mut items = vec![item(&file, "test_leak")];
+    items.extend((0..8).map(|_| item(&file, "test_next")));
+    let start = Instant::now();
+    let results = run_tests_with_options(&items, &options(), |_| {}).unwrap();
+    assert!(start.elapsed() < Duration::from_secs(3));
+    assert_eq!(results.failed_count(), 1, "{:?}", results.results);
+    assert_eq!(results.passed_count(), 8);
+    assert!(
+        results.results[0]
+            .error
+            .as_ref()
+            .unwrap()
+            .message
+            .contains("did not stop")
+    );
+    assert_eq!(
+        fs::read_to_string(dir.path().join("test_cases.py.witness")).unwrap(),
+        "once"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn native_capture_fallback_uses_independent_reader_offsets() {
+    use std::os::unix::fs::PermissionsExt;
+    let (dir, file) = suite(
+        "import os\ndef test_one(): os.write(1, b'first')\ndef test_two(): os.write(1, b'second')\n",
+    );
+    let python = dir.path().join("python-no-pread");
+    fs::write(
+        &python,
+        "#!/usr/bin/env python3\nimport os, sys\ndel os.pread\nexec(sys.argv[-1])\n",
+    )
+    .unwrap();
+    fs::set_permissions(&python, fs::Permissions::from_mode(0o755)).unwrap();
+    let options = RunOptions {
+        python: Some(python),
+        ..options()
+    };
+    let results = run_tests_with_options(
+        &[item(&file, "test_one"), item(&file, "test_two")],
+        &options,
+        |_| {},
+    )
+    .unwrap();
+    assert!(results.all_passed(), "{:?}", results.results);
+    assert_eq!(results.results[0].stdout.as_deref(), Some("first"));
+    assert_eq!(results.results[1].stdout.as_deref(), Some("second"));
+}

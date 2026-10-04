@@ -143,7 +143,7 @@ impl Worker {
         batch: &[(usize, &TestItem)],
         options: &RunOptions,
         mut completed: impl FnMut(usize, TestResult),
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let tests: Vec<_> = batch.iter().map(|(idx, item)| serde_json::json!({
             "id": idx, "file": item.file.canonicalize().unwrap_or_else(|_| item.file.clone()),
             "function": item.function, "class": item.class,
@@ -157,7 +157,7 @@ impl Worker {
         self.stdin.write_all(&data)?;
         self.stdin.flush()?;
         let mut remaining: HashMap<usize, &TestItem> = batch.iter().copied().collect();
-        while !remaining.is_empty() {
+        loop {
             let raw = if let Some(timeout) = options.timeout {
                 self.responses
                     .recv_timeout(timeout)
@@ -173,6 +173,17 @@ impl Worker {
                     .recv()
                     .context("Python worker response channel closed")??
             };
+            if raw.get("done").and_then(|value| value.as_bool()) == Some(true) {
+                let restart = raw
+                    .get("restart")
+                    .and_then(|value| value.as_bool())
+                    .unwrap_or(false);
+                anyhow::ensure!(
+                    remaining.is_empty() || restart,
+                    "Worker ended batch before all tests completed"
+                );
+                return Ok(restart);
+            }
             let response: WorkerResponse = serde_json::from_value(raw)?;
             let item = remaining
                 .remove(&response.id)
@@ -196,7 +207,6 @@ impl Worker {
                 },
             );
         }
-        Ok(())
     }
 }
 
@@ -393,7 +403,7 @@ fn worker_thread(
                 pending.push((idx, &items[idx]));
             }
         }
-        if !pending.is_empty() {
+        while !pending.is_empty() {
             let start = Instant::now();
             let mut done = Vec::new();
             if worker.is_none() {
@@ -408,7 +418,7 @@ fn worker_thread(
                     }
                 }
             }
-            let execution = (|| -> Result<()> {
+            let execution = (|| -> Result<bool> {
                 worker
                     .as_mut()
                     .unwrap()
@@ -421,21 +431,34 @@ fn worker_thread(
                         let _ = tx.send((idx, result));
                     })
             })();
-            if let Err(error) = execution {
-                if let Some(worker) = worker.as_mut() {
-                    worker.healthy = false;
+            pending.retain(|(idx, _)| !done.contains(idx));
+            match execution {
+                Ok(restart) => {
+                    if restart {
+                        worker.as_mut().unwrap().healthy = false;
+                        worker.take();
+                    }
                 }
-                worker.take();
-                for (idx, item) in pending {
-                    if !done.contains(&idx) {
+                Err(error) => {
+                    if let Some(worker) = worker.as_mut() {
+                        worker.healthy = false;
+                    }
+                    worker.take();
+                    if pending.is_empty() {
+                        let mut state = queue.state.lock().unwrap();
+                        state.stopped = true;
+                        state.fatal_error =
+                            Some(format!("Worker failed to finish its batch: {error:#}"));
+                    }
+                    for (idx, item) in pending.drain(..) {
                         let _ = tx.send((
                             idx,
                             failed_result(item, format!("{error:#}"), start.elapsed()),
                         ));
                     }
-                }
-                if options.fail_fast {
-                    queue.state.lock().unwrap().stopped = true;
+                    if options.fail_fast {
+                        queue.state.lock().unwrap().stopped = true;
+                    }
                 }
             }
             if options.isolation == IsolationMode::ProcessPerTest {

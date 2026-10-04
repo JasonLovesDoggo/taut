@@ -12,13 +12,19 @@ import traceback
 import types
 
 _MAX_OUTPUT = 1024 * 1024
-_protocol = os.fdopen(os.dup(1), "wb", buffering=0)
+_protocol = os.fdopen(os.dup(1), "wb")
 _input = os.fdopen(os.dup(0), "rb")
 with open(os.devnull, "rb") as _null:
     os.dup2(_null.fileno(), 0)
 sys.stdin = io.TextIOWrapper(os.fdopen(os.dup(0), "rb"))
 # dup() descriptors are non-inheritable: child processes cannot keep our protocol open.
-_native = [tempfile.TemporaryFile(), tempfile.TemporaryFile()]
+_native = [tempfile.TemporaryFile() if hasattr(os, "pread") else tempfile.NamedTemporaryFile() for _ in range(2)]
+# Windows has no pread. Reopen named captures with independent read offsets and
+# O_TEMPORARY sharing so native writes never race with a seek on the writer fd.
+_native_readers = None if hasattr(os, "pread") else [
+    os.open(file.name, os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_TEMPORARY", 0))
+    for file in _native
+]
 _native_offsets = [0, 0]
 for _fd, _file in enumerate(_native, 1):
     os.dup2(_file.fileno(), _fd)
@@ -29,6 +35,7 @@ _loop = None
 _asyncio = None
 _single_owner = None
 _running_cases = set()
+_dirty = False
 
 
 class Capture(io.StringIO):
@@ -108,7 +115,9 @@ sys.__stdout__, sys.__stderr__ = _outputs
 
 def _send(value):
     data = json.dumps(value, ensure_ascii=True, separators=(",", ":")).encode()
-    _protocol.write(struct.pack("<I", len(data)) + data)
+    _protocol.write(struct.pack("<I", len(data)))
+    _protocol.write(data)
+    _protocol.flush()
 
 
 def _read():
@@ -233,7 +242,13 @@ class Case:
             # pread leaves the writer's file offset untouched, including subprocess writes.
             end = os.fstat(_native[index].fileno()).st_size
             size = end - _native_offsets[index]
-            native = os.pread(_native[index].fileno(), min(size, _MAX_OUTPUT), _native_offsets[index]) if size else b""
+            if size and _native_readers is None:
+                native = os.pread(_native[index].fileno(), min(size, _MAX_OUTPUT), _native_offsets[index])
+            elif size:
+                os.lseek(_native_readers[index], _native_offsets[index], os.SEEK_SET)
+                native = os.read(_native_readers[index], min(size, _MAX_OUTPUT))
+            else:
+                native = b""
             _native_offsets[index] = end
             extra = _shared[index].getvalue() + native.decode("utf-8", "replace")
             _shared[index].seek(0)
@@ -300,6 +315,8 @@ async def _call_async(function):
 
 
 async def _cleanup_tasks(case):
+    global _dirty
+    deadline = time.monotonic() + 0.25
     current = _asyncio.current_task()
     # Give call_soon callbacks one turn so assertions cannot disappear after a pass.
     await _asyncio.sleep(0)
@@ -314,10 +331,16 @@ async def _cleanup_tasks(case):
         for task in tasks:
             if not task.done():
                 task.cancel()
-        values = await _asyncio.gather(*tasks, return_exceptions=True)
-        for task, value in zip(tasks, values):
-            if task in report and isinstance(value, BaseException) and not isinstance(value, _asyncio.CancelledError):
-                case.record(value, "background task")
+        done, pending = await _asyncio.wait(tasks, timeout=max(0, deadline - time.monotonic()))
+        for task in done:
+            if not task.cancelled():
+                value = task.exception()
+                if task in report and value is not None:
+                    case.record(value, "background task")
+        if pending or (case.tasks and time.monotonic() >= deadline):
+            case.record(RuntimeError("Background tasks did not stop within 250ms after cancellation; worker will be replaced"), "cleanup")
+            _dirty = True
+            break
     # Timer callbacks retain a test's context even after its coroutine returns.
     # Cancel owned timers so they cannot mutate state during a subsequent test.
     loop = _asyncio.get_running_loop()
@@ -458,6 +481,8 @@ def _run_batch(request):
 
     try:
         for item in request["tests"]:
+            if _dirty:
+                break
             case = Case(item, coverage)
             case.prepare()
             if case.errors or case.skip is not None:
@@ -468,6 +493,8 @@ def _run_batch(request):
                     flush()
             else:
                 flush()
+                if _dirty:
+                    break
                 _sync_case(case)
         flush()
     finally:
@@ -482,6 +509,9 @@ def main():
         if request is None or request.get("cmd") == "shutdown":
             return
         _run_batch(request)
+        _send({"done": True, "restart": _dirty})
+        if _dirty:
+            return
 
 
 if __name__ == "__main__":
