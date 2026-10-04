@@ -1,9 +1,9 @@
 use crate::blocks::FileBlocks;
-use crate::depdb::{DependencyDatabase, TestRunDecision};
+use crate::depdb::{DependencyDatabase, TestRunDecision, canonical_path, fingerprint_file};
 use crate::discovery::TestItem;
 use crate::runner::TestResult;
-use std::collections::HashMap;
-use std::path::PathBuf;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
 pub struct TestSelection {
@@ -28,39 +28,80 @@ pub struct TestSelector {
 
 impl TestSelector {
     pub fn new() -> Self {
-        Self {
+        let mut selector = Self {
             depdb: DependencyDatabase::load(),
             block_index: HashMap::new(),
-        }
+        };
+        selector.set_execution_context("");
+        selector
     }
 
-    /// Index all Python files in given paths
+    /// Bind cached results to the interpreter and execution options chosen by
+    /// the caller. Only a digest is persisted; environment values stay private.
+    pub fn set_execution_context(&mut self, context: &str) {
+        let mut environment: Vec<_> = std::env::vars_os().collect();
+        environment.sort();
+        let mut hash = xxhash_rust::xxh64::Xxh64::new(0);
+        hash.update(env!("CARGO_PKG_VERSION").as_bytes());
+        hash.update(context.as_bytes());
+        for (key, value) in environment {
+            for component in [key, value] {
+                let bytes = component.as_encoded_bytes();
+                hash.update(&(bytes.len() as u64).to_le_bytes());
+                hash.update(bytes);
+            }
+        }
+        self.depdb.set_context(format!("{:016x}", hash.digest()));
+    }
+
+    /// Snapshot project sources, including application modules outside the test
+    /// directory. Reading source bytes is cheaper and safer than AST-based
+    /// dependency inference. Any addition, removal or edit reruns the suite.
     pub fn index_files(&mut self, paths: &[PathBuf]) {
-        for path in paths {
-            if path.is_file() && path.extension().is_some_and(|e| e == "py") {
-                self.index_single_file(path);
-            } else if path.is_dir() {
-                for entry in WalkDir::new(path)
-                    .into_iter()
-                    .filter_map(|e| e.ok())
-                    .filter(|e| {
-                        e.file_type().is_file()
-                            && e.path().extension().is_some_and(|ext| ext == "py")
-                    })
-                {
-                    self.index_single_file(entry.path());
+        let roots: BTreeSet<_> = paths.iter().map(|path| project_root(path)).collect();
+        let mut files = BTreeMap::new();
+        let mut incomplete = roots.is_empty();
+        for root in &roots {
+            for entry in WalkDir::new(root)
+                .follow_links(true)
+                .into_iter()
+                .filter_entry(|entry| {
+                    !entry.file_type().is_dir() || !excluded_directory(entry.file_name())
+                })
+            {
+                match entry {
+                    Ok(entry) if entry.file_type().is_file() && snapshot_file(entry.path()) => {
+                        let path = canonical_path(entry.path());
+                        match fingerprint_file(&path) {
+                            Ok(checksum) => {
+                                files.insert(path, checksum);
+                            }
+                            Err(_) => incomplete = true,
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(_) => incomplete = true,
                 }
             }
         }
-    }
-
-    fn index_single_file(&mut self, path: &std::path::Path) {
-        let abs_path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-
-        if let Ok(file_blocks) = FileBlocks::from_file(&abs_path) {
-            self.depdb.update_blocks(&file_blocks);
-            self.block_index.insert(abs_path, file_blocks);
+        // Imported helpers outside the root remain shared dependencies, even
+        // when later tests reuse Python's module cache and emit no import lines.
+        for path in self.depdb.coverage_files() {
+            if files.contains_key(path) {
+                continue;
+            }
+            match fingerprint_file(path) {
+                Ok(checksum) => {
+                    files.insert(path.clone(), checksum);
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    files.insert(path.clone(), "<deleted>".to_string());
+                }
+                Err(_) => incomplete = true,
+            }
         }
+        self.block_index.clear();
+        self.depdb.replace_files(files, incomplete);
     }
 
     /// Select which tests need to run based on dependency changes.
@@ -96,6 +137,9 @@ impl TestSelector {
 
     /// Record test result with coverage data
     pub fn record_result(&mut self, result: &TestResult) {
+        if result.skipped {
+            return;
+        }
         if let Some(ref coverage) = result.coverage {
             self.depdb.record_test_coverage(
                 &result.item,
@@ -134,4 +178,72 @@ impl Default for TestSelector {
     fn default() -> Self {
         Self::new()
     }
+}
+
+fn project_root(path: &Path) -> PathBuf {
+    let path = canonical_path(path);
+    let directory = if path.is_dir() {
+        path.as_path()
+    } else {
+        path.parent().unwrap_or(&path)
+    };
+    for ancestor in directory.ancestors() {
+        if ["pyproject.toml", "setup.cfg", "setup.py", ".git"]
+            .iter()
+            .any(|marker| ancestor.join(marker).exists())
+        {
+            return ancestor.to_path_buf();
+        }
+    }
+    if let Ok(cwd) = std::env::current_dir() {
+        let cwd = canonical_path(&cwd);
+        if path.starts_with(&cwd) {
+            return cwd;
+        }
+    }
+    if directory
+        .file_name()
+        .is_some_and(|name| name == "tests" || name == "test")
+    {
+        return directory.parent().unwrap_or(directory).to_path_buf();
+    }
+    directory.to_path_buf()
+}
+
+fn excluded_directory(name: &std::ffi::OsStr) -> bool {
+    matches!(
+        name.to_str(),
+        Some(
+            ".git"
+                | ".venv"
+                | "venv"
+                | "__pycache__"
+                | ".tox"
+                | ".nox"
+                | "node_modules"
+                | "target"
+                | ".taut"
+        )
+    )
+}
+
+fn snapshot_file(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|ext| ext.to_str()),
+        Some("py" | "pyi")
+    ) || matches!(
+        path.file_name().and_then(|name| name.to_str()),
+        Some(
+            "pyproject.toml"
+                | "setup.cfg"
+                | "setup.py"
+                | "pytest.ini"
+                | "tox.ini"
+                | "uv.lock"
+                | "poetry.lock"
+                | "Pipfile"
+                | "Pipfile.lock"
+                | "requirements.txt"
+        )
+    )
 }

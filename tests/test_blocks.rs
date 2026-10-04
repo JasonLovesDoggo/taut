@@ -2,11 +2,9 @@
 //!
 //! These tests verify that taut correctly:
 //! - Extracts code blocks (functions, classes, imports, top-level)
-//! - Computes checksums that are stable across whitespace changes
+//! - Preserves every source byte in checksums
 //! - Handles edge cases like async functions, decorators, UTF-8
 //!
-//! Several tests here are expected to FAIL until bugs are fixed.
-//! They document correct behavior that the code should have.
 
 mod helpers;
 
@@ -32,8 +30,7 @@ fn write_file(path: &Path, content: &str) -> Result<()> {
 // =============================================================================
 
 #[test]
-fn checksum_ignores_leading_whitespace() {
-    // These should have the same checksum
+fn checksum_preserves_leading_whitespace() {
     let a = "def foo():\n    pass";
     let b = "def foo():\n        pass"; // More indentation
 
@@ -43,43 +40,43 @@ fn checksum_ignores_leading_whitespace() {
     let checksum_a = &blocks_a.blocks[0].checksum;
     let checksum_b = &blocks_b.blocks[0].checksum;
 
-    assert_eq!(
+    assert_ne!(
         checksum_a, checksum_b,
-        "Checksums should be equal regardless of indentation"
+        "Exact-source checksums must preserve indentation"
     );
 }
 
 #[test]
-fn checksum_ignores_trailing_whitespace() {
+fn checksum_preserves_trailing_whitespace() {
     let a = "def foo():\n    pass";
     let b = "def foo():   \n    pass   "; // Trailing spaces
 
     let blocks_a = FileBlocks::from_source(a, "test.py").unwrap();
     let blocks_b = FileBlocks::from_source(b, "test.py").unwrap();
 
-    assert_eq!(blocks_a.blocks[0].checksum, blocks_b.blocks[0].checksum);
+    assert_ne!(blocks_a.blocks[0].checksum, blocks_b.blocks[0].checksum);
 }
 
 #[test]
-fn checksum_ignores_blank_lines() {
+fn checksum_preserves_blank_lines() {
     let a = "def foo():\n    pass";
     let b = "def foo():\n\n    pass\n\n"; // Blank lines inside and after
 
     let blocks_a = FileBlocks::from_source(a, "test.py").unwrap();
     let blocks_b = FileBlocks::from_source(b, "test.py").unwrap();
 
-    assert_eq!(blocks_a.blocks[0].checksum, blocks_b.blocks[0].checksum);
+    assert_ne!(blocks_a.blocks[0].checksum, blocks_b.blocks[0].checksum);
 }
 
 #[test]
-fn checksum_ignores_comment_lines() {
+fn checksum_preserves_comment_lines() {
     let a = "def foo():\n    pass";
     let b = "def foo():\n    # This is a comment\n    pass";
 
     let blocks_a = FileBlocks::from_source(a, "test.py").unwrap();
     let blocks_b = FileBlocks::from_source(b, "test.py").unwrap();
 
-    assert_eq!(blocks_a.blocks[0].checksum, blocks_b.blocks[0].checksum);
+    assert_ne!(blocks_a.blocks[0].checksum, blocks_b.blocks[0].checksum);
 }
 
 #[test]
@@ -456,16 +453,11 @@ fn class_variables_after_methods_belong_to_some_block() {
 
     let blocks = FileBlocks::from_source(code, "test.py").unwrap();
 
-    // Check what line 6 (after_var = 1) maps to
-    // In the current implementation, it maps to nothing
-    let line_6_block = blocks.get_block_for_line(6);
-
-    // This SHOULD map to something (either the class or a separate block)
-    // Currently it's orphaned
-    if line_6_block.is_none() {
-        // Document the bug but don't fail (yet)
-        eprintln!("BUG: Class variable after method is orphaned (maps to no block)");
-    }
+    let attribute = blocks
+        .get_block_for_line(5)
+        .expect("class attribute must have a block");
+    assert_eq!(attribute.id.name, "Foo");
+    assert_eq!(attribute.id.kind, BlockKind::Class);
 }
 
 #[test]
@@ -825,4 +817,24 @@ impl FileBlocksTestExt for FileBlocks {
         fs::write(&path, source)?;
         FileBlocks::from_file(&path)
     }
+}
+
+#[test]
+fn checksum_detects_semantic_indentation_change() {
+    let before = "def foo():\n    if False:\n        return 1\n    return 2\n";
+    let after = "def foo():\n    if False:\n        return 1\n        return 2\n";
+    let before = FileBlocks::from_source(before, "test.py").unwrap();
+    let after = FileBlocks::from_source(after, "test.py").unwrap();
+    assert_ne!(before.blocks[0].checksum, after.blocks[0].checksum);
+    assert_ne!(before.source_checksum, after.source_checksum);
+}
+
+#[test]
+fn checksum_detects_hash_text_inside_multiline_string() {
+    let before = "def foo():\n    return \"\"\"\n# first value\n\"\"\"\n";
+    let after = "def foo():\n    return \"\"\"\n# changed value\n\"\"\"\n";
+    let before = FileBlocks::from_source(before, "test.py").unwrap();
+    let after = FileBlocks::from_source(after, "test.py").unwrap();
+    assert_ne!(before.blocks[0].checksum, after.blocks[0].checksum);
+    assert_ne!(before.source_checksum, after.source_checksum);
 }
